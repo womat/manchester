@@ -58,6 +58,9 @@ const (
 	bitTimeTolerance  = 25  // bitTimeTolerance is the timing tolerance for half and full bit timings.
 )
 
+// edgeToBit maps the edge event to a Bit (High or Low).
+var edgeToBit = [2]Bit{Low, High}
+
 // Decoder holds all relevant information and channels for the decoding process.
 type Decoder struct {
 	state int // state keeps track of where in the process we are (clock discovery vs. data decoding).
@@ -84,7 +87,7 @@ type Decoder struct {
 // This approach avoids premature decoding and ensures proper synchronization.
 func New(c chan Event) *Decoder {
 	d := &Decoder{
-		C:                 make(chan Bit, 100),
+		C:                 make(chan Bit, 1024),
 		eventC:            c,
 		stop:              make(chan struct{}),
 		wg:                sync.WaitGroup{},
@@ -146,6 +149,12 @@ func (d *Decoder) eventHandler(event Event) {
 	delta := event.Time.Sub(d.lastTimestamp)
 	d.lastTimestamp = event.Time
 
+	if event.Edge != RisingEdge && event.Edge != FallingEdge {
+		slog.Warn("invalid edge event", "edge", event.Edge)
+		d.C <- Invalid
+		return
+	}
+
 	switch d.state {
 	case discoverClock:
 		slog.Debug("discovering clock frequency", "signal time", delta, "probe", len(d.clockEventSamples))
@@ -171,7 +180,7 @@ func (d *Decoder) eventHandler(event Event) {
 		if withinTolerance(delta, d.fullBitTime, d.fullBitTimeTolerance) {
 			// full bit recognized >> send bit
 			d.receivedHalfBit = 0
-			d.C <- mapEdge(event.Edge)
+			d.C <- edgeToBit[event.Edge]
 			return
 		}
 
@@ -184,7 +193,7 @@ func (d *Decoder) eventHandler(event Event) {
 
 			// second half bit recognized >> send bit
 			d.receivedHalfBit = 0
-			d.C <- mapEdge(event.Edge)
+			d.C <- edgeToBit[event.Edge]
 			return
 		}
 
@@ -250,13 +259,9 @@ func median(durations []time.Duration) time.Duration {
 // withinTolerance checks if a value is within a given tolerance range around a reference value.
 // This function helps ensure that events are close enough to the expected timing values (half or full bit period).
 func withinTolerance(value, reference, tolerance time.Duration) bool {
-	return (value - reference).Abs() <= tolerance
-}
-
-// mapEdge maps the edge event to a Bit (High or Low).
-func mapEdge(edge int) Bit {
-	if edge == RisingEdge {
-		return High
+	delta := value - reference
+	if delta < 0 {
+		delta = -delta
 	}
-	return Low
+	return delta <= tolerance
 }
