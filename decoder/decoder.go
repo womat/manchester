@@ -28,23 +28,24 @@ package decoder
 import (
 	"log/slog"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 )
 
+type Edge uint8
+
 // Event represents a state change event (e.g., RisingEdge or FallingEdge).
 type Event struct {
 	Time time.Time // Time is the exact time when the edge event was detected.
-	Edge int       // Edge indicates the type of state change (RisingEdge or FallingEdge).
+	Edge Edge      // Edge indicates the type of state change (RisingEdge or FallingEdge).
 }
 
 // Bit represents a decoded bit (High or Low).
 type Bit int
 
 const (
-	FallingEdge = 0 // FallingEdge indicates an active to inactive event (high to low).
-	RisingEdge  = 1 // RisingEdge indicates an inactive event to an active event (low to high).
+	FallingEdge Edge = 0 // FallingEdge indicates an active to inactive event (high to low).
+	RisingEdge  Edge = 1 // RisingEdge indicates an inactive event to an active event (low to high).
 
 	Low     Bit = 0  // Low represents a low signal level.
 	High    Bit = 1  // High represents a high signal level.
@@ -56,6 +57,7 @@ const (
 
 	clockEventSamples = 500 // clockEventSamples is the number of event samples used to calculate the clock frequency.
 	bitTimeTolerance  = 25  // bitTimeTolerance is the timing tolerance for half and full bit timings.
+	invalidThreshold  = 20  // invalidThreshold defines the maximum number of consecutive invalid intervals before resynchronization is triggered.
 )
 
 // edgeToBit maps the edge event to a Bit (High or Low).
@@ -75,6 +77,7 @@ type Decoder struct {
 
 	fullBitTimeTolerance time.Duration // Tolerance for the full bit period.
 	halfBitTimeTolerance time.Duration // Tolerance for the half-bit period.
+	invalidCount         int
 
 	C      chan Bit       // C is the channel to send the decoded bit stream.
 	eventC chan Event     // eventC is the channel to receive the line events (rising/falling edges)..
@@ -146,14 +149,19 @@ func (d *Decoder) Close() error {
 //     or a rising edge while the second half of a half bit period
 //     decoding manchester code:  https://www.elektroniktutor.de/internet/codes.html
 func (d *Decoder) eventHandler(event Event) {
-	delta := event.Time.Sub(d.lastTimestamp)
-	d.lastTimestamp = event.Time
 
 	if event.Edge != RisingEdge && event.Edge != FallingEdge {
 		slog.Warn("invalid edge event", "edge", event.Edge)
-		d.C <- Invalid
+		d.sendBit(Invalid)
 		return
 	}
+	if d.lastTimestamp.IsZero() {
+		d.lastTimestamp = event.Time
+		return
+	}
+
+	delta := event.Time.Sub(d.lastTimestamp)
+	d.lastTimestamp = event.Time
 
 	switch d.state {
 	case discoverClock:
@@ -162,13 +170,23 @@ func (d *Decoder) eventHandler(event Event) {
 
 		// Once enough samples are gathered, calculate the bit periods.
 		if len(d.clockEventSamples) >= clockEventSamples {
-			d.halfBitTime, d.fullBitTime = calcBitPeriods(d.clockEventSamples)
+			half, full := calcBitPeriods(d.clockEventSamples)
+
+			if full <= 0 || half <= 0 {
+				slog.Error("invalid clock discovered - fullBitTime <= 0")
+				d.resynchronize()
+				return
+			}
+
+			d.halfBitTime = half
+			d.fullBitTime = full
 			d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
 			d.fullBitTimeTolerance = d.fullBitTime * bitTimeTolerance / 100
 			d.clockEventSamples = nil
-			d.state = decodeData
 			d.receivedHalfBit = 0
-			slog.Info("discovering clock frequency finished", "frequency", strconv.FormatFloat(1/d.fullBitTime.Seconds(), 'f', 2, 64))
+			d.state = decodeData
+
+			slog.Info("discovering clock frequency finished", "frequency", 1/d.fullBitTime.Seconds())
 			slog.Debug("Timing values",
 				"halfBitTime", d.halfBitTime,
 				"halfBitTimeTolerance", d.halfBitTimeTolerance,
@@ -180,11 +198,14 @@ func (d *Decoder) eventHandler(event Event) {
 		if withinTolerance(delta, d.fullBitTime, d.fullBitTimeTolerance) {
 			// full bit recognized >> send bit
 			d.receivedHalfBit = 0
-			d.C <- edgeToBit[event.Edge]
+			d.invalidCount = 0
+			d.sendBit(edgeToBit[event.Edge])
 			return
 		}
 
 		if withinTolerance(delta, d.halfBitTime, d.halfBitTimeTolerance) {
+			d.invalidCount = 0
+
 			if d.receivedHalfBit == 0 {
 				// first half bit recognized >> wait for second half bit
 				d.receivedHalfBit = 1
@@ -193,18 +214,22 @@ func (d *Decoder) eventHandler(event Event) {
 
 			// second half bit recognized >> send bit
 			d.receivedHalfBit = 0
-			d.C <- edgeToBit[event.Edge]
+			d.sendBit(edgeToBit[event.Edge])
 			return
 		}
 
 		slog.Warn("invalid interval", "delta", delta)
 		d.receivedHalfBit = 0
-		d.C <- Invalid
+		d.invalidCount++
+		d.sendBit(Invalid)
+		if d.invalidCount > invalidThreshold {
+			d.resynchronize()
+		}
 
 	default:
 		slog.Error("unknown state", "state", d.state)
 		d.state = discoverClock
-		d.C <- Invalid
+		d.sendBit(Invalid)
 	}
 }
 
@@ -264,4 +289,24 @@ func withinTolerance(value, reference, tolerance time.Duration) bool {
 		delta = -delta
 	}
 	return delta <= tolerance
+}
+
+func (d *Decoder) sendBit(bit Bit) {
+	select {
+	case d.C <- bit:
+	default:
+		slog.Warn("decoder output channel full")
+	}
+	return
+}
+
+func (d *Decoder) resynchronize() {
+
+	slog.Warn("too many invalid intervals - resynchronizing")
+
+	d.state = discoverClock
+	d.clockEventSamples = d.clockEventSamples[:0] // reset the slice without reallocating (keep capacity)
+	d.invalidCount = 0
+	d.receivedHalfBit = 0
+	d.lastTimestamp = time.Time{} // wichtig!
 }
