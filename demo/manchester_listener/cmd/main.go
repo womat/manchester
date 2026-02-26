@@ -1,10 +1,4 @@
-// Command gpio-watch is a CLI tool for monitoring GPIO input events on a Raspberry Pi.
-//
-// It allows selecting a GPIO pin, configuring rising and/or falling edge detection,
-// and optionally setting a debounce time in milliseconds. The program initializes
-// the pin as input with an internal pull-up resistor and logs each detected edge
-// event with a precise timestamp.
-//
+// This program reads Manchester-encoded signals from the GPIO pin and outputs the decoded bytes.
 // The watcher runs until interrupted (e.g., via Ctrl+C).
 package main
 
@@ -44,7 +38,6 @@ func main() {
 	}
 
 	// Create a context to control watching lifetime
-	// --- Kontext für sauberes Stoppen ---
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -98,7 +91,7 @@ func main() {
 				if !ok {
 					return
 				}
-				if bit == decoder.Invalid {
+				if bit != decoder.Low && bit != decoder.High {
 					continue
 				}
 
@@ -123,9 +116,8 @@ func main() {
 			}
 		}
 	}()
-
-	// Warten bis Interrupt
 	<-ctx.Done()
+	log.Printf("Encoder Info: %s", dec.Info())
 	log.Println("Interrupt received, stopping...")
 	gpioPin.Close()
 	dec.Close()
