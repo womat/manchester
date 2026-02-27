@@ -86,14 +86,14 @@ var ErrEncoderStopped = errors.New("encoder stopped")
 
 // Encoder implements a Manchester encoder that runs in the background.
 type Encoder struct {
-	writeMutex         sync.Mutex   // Mutex to synchronize Write() access
-	bitClockHz         int          // frequency in Hz (e.g., 50 Hz)
-	bitOrder           BitOrder     // Order of bits: LSBFirst or MSBFirst
-	syncBytes          int          // Number of 0xFF bytes for synchronization before actual data
-	buffer             chan txByte  // Buffered channel for outgoing frames
-	halfBitTicker      *time.Ticker // Ticker for Manchester half-bit transitions
-	setValue           SetValue     // Function to set the GPIO output level
-	bufferSize         int
+	writeMutex         sync.Mutex         // Mutex to synchronize Write() access
+	bitClockHz         int                // frequency in Hz (e.g., 50 Hz)
+	bitOrder           BitOrder           // Order of bits: LSBFirst or MSBFirst
+	syncBytes          int                // Number of 0xFF bytes for synchronization before actual data
+	buffer             chan txByte        // Buffered channel for outgoing txBytes
+	halfBitTicker      *time.Ticker       // Ticker for Manchester half-bit transitions
+	setValue           SetValue           // Function to set the GPIO output level
+	bufferSize         int                // Size of the internal buffer channel
 	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
 	encodingTable      [2][2]Level        // Manchester encoding lookup table: [bit][half-step]
 
@@ -191,7 +191,7 @@ func (e *Encoder) Close() error {
 	return nil
 }
 
-// Wait waits until all buffered frames have been transmitted.
+// Wait waits until all buffered txBytes have been transmitted.
 func (e *Encoder) Wait() {
 	e.wgBytes.Wait() // block until all bytes fully transmitted
 }

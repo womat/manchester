@@ -19,8 +19,10 @@ import (
 
 func main() {
 	gpioLine := flag.Int("gpioline", 21, "GPIO pin number")
-	freq := flag.Int("freq", 50, "Carrier frequency in Hzs")
+	bitClock := flag.Int("bitClock", 50, "bit clock in Hz")
 	msb := flag.Bool("msb", false, "Use MSB instead of LSB")
+	thomas := flag.Bool("thomas", false, "use 'Differential Manchester/Thomas' encoding instead of IEEE 802.3")
+	sync := flag.Int("sync", 0, "number of sync bytes to send before the message")
 	flag.Parse()
 
 	if flag.NArg() == 0 {
@@ -40,7 +42,7 @@ func main() {
 
 	log.Printf("GPIO Pin %d: %s", gpioPin.Number(), gpioPin.Info())
 
-	setValue := func(level int) error {
+	setValue := func(level encoder.Level) error {
 		return gpioPin.SetValue(gpio.Level(level))
 	}
 
@@ -48,10 +50,15 @@ func main() {
 	if *msb {
 		order = encoder.MSBFirst
 	}
+	encoding := encoder.IEEE
+	if *thomas {
+		encoding = encoder.Thomas
+	}
 
-	enc := encoder.New(uint(*freq), setValue,
+	enc := encoder.New(*bitClock, setValue,
 		encoder.WithBitOrder(order),
-		encoder.WithSyncBytes(2), // optional: Anzahl Sync-Bytes
+		encoder.WithSyncBytes(*sync),
+		encoder.WithManchesterEncoding(encoding),
 	)
 	defer enc.Close()
 	_, err = enc.Write(msg)
@@ -60,6 +67,6 @@ func main() {
 	}
 
 	// Warten, bis alles gesendet wurde
-	enc.Flush()
+	enc.Wait()
 	log.Println("Message sent!")
 }

@@ -42,13 +42,25 @@ type Event struct {
 	Edge Edge      // Edge indicates the type of state change (RisingEdge or FallingEdge).
 }
 
+// ManchesterEncoding represents the type of Manchester encoding to use.
+type ManchesterEncoding int
+
+type Option func(*Decoder)
+
 const (
 	FallingEdge Edge = 0 // FallingEdge represents a high → low transition
 	RisingEdge  Edge = 1 // RisingEdge represents a low → high transition
 
-	Low  Bit = 0 // Low represents a logical 0
-	High Bit = 1 // High represents a logical 1
+	Low     Bit = 0  // Low represents a logical 0
+	High    Bit = 1  // High represents a logical 1
+	Invalid Bit = -1 // Invalid represents an invalid bit (e.g., due to timing errors)
 )
+
+const (
+	IEEE ManchesterEncoding = iota
+	Thomas
+)
+
 const (
 	discoverClock = iota // Decoder state: clock discovery
 	decodeData           // Decoder state: data decoding
@@ -58,9 +70,6 @@ const (
 	invalidThreshold  = 20  // Max consecutive invalid intervals before resync
 )
 
-// edgeToBit maps Edge events to decoded Bits
-var edgeToBit = [2]Bit{Low, High}
-
 // Decoder holds all state and channels for decoding Manchester signals
 type Decoder struct {
 	state int // Current state: clock discovery or data decoding
@@ -68,6 +77,10 @@ type Decoder struct {
 	clockEventSamples []time.Duration // Samples for clock discovery
 	lastTimestamp     time.Time       // Time of last event
 	receivedHalfBit   int             // Tracks first or second half of bit
+	bufferSize        int             // Size of the output bit buffer (default 1024)
+
+	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
+	decodingTable      [2]Bit             // Manchester decoding lookup table: [Level][Bit]
 
 	fullBitTime          time.Duration // Full bit period duration
 	halfBitTime          time.Duration // Half-bit period duration
@@ -87,19 +100,52 @@ type Decoder struct {
 // New creates a new Decoder instance, initializes channels, and starts the decoding goroutine
 // The state machine is set up to discover the clock first before proceeding to data decoding.
 // This approach avoids premature decoding and ensures proper synchronization.
-func New(c chan Event) *Decoder {
+func New(c chan Event, bitClockHz int, opts ...Option) *Decoder {
 	d := &Decoder{
-		C:                 make(chan Bit, 1024),
 		eventC:            c,
 		stop:              make(chan struct{}),
 		wg:                sync.WaitGroup{},
 		clockEventSamples: make([]time.Duration, 0, clockEventSamples),
 		state:             discoverClock,
+		bufferSize:        1024,
 	}
+
+	for _, opt := range opts {
+		opt(d)
+	}
+
+	d.decodingTable = decodingTable(d.manchesterEncoding)
+
+	d.C = make(chan Bit, d.bufferSize)
+	if bitClockHz > 0 {
+		// If a frequency is provided, calculate the expected bit periods and tolerances directly.
+		d.fullBitTime = time.Duration(int64(time.Second) / int64(bitClockHz))
+		d.halfBitTime = d.fullBitTime / 2
+		d.fullBitTimeTolerance = d.fullBitTime * bitTimeTolerance / 100
+		d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
+		d.state = decodeData // Skip clock discovery if frequency is known
+	}
+
 	d.wg.Add(1)
 	// Start the decoding process in a separate goroutine.
 	go d.listenForEvents()
 	return d
+}
+
+func WithBufferSize(size int) Option {
+	return func(d *Decoder) {
+		if size > 0 {
+			d.bufferSize = size
+		}
+	}
+}
+
+// WithManchesterEncoding sets the type of Manchester encoding (e.g., IEEE or Thomas).
+func WithManchesterEncoding(enc ManchesterEncoding) Option {
+	return func(e *Decoder) {
+		e.manchesterEncoding = enc
+		e.decodingTable = decodingTable(enc)
+	}
 }
 
 // Close stops the decoder, waits for the goroutine, and closes output channels
@@ -191,7 +237,8 @@ func (d *Decoder) eventHandler(event Event) {
 			// full bit detected >> its' a 1 or 0 depending on the edge
 			d.receivedHalfBit = 0
 			d.invalidIntervalCount = 0
-			d.sendBit(edgeToBit[event.Edge])
+			d.sendBit(d.decodingTable[event.Edge])
+			// fmt.Printf(" full bit detected: %v %vus\n", edgeToBit[event.Edge], delta.Microseconds())
 			return
 		}
 
@@ -205,12 +252,15 @@ func (d *Decoder) eventHandler(event Event) {
 
 			// second half bit detected >> it's a 1 or 0 depending on the edge
 			d.receivedHalfBit = 0
-			d.sendBit(edgeToBit[event.Edge])
+			d.sendBit(d.decodingTable[event.Edge])
+			// fmt.Printf(" half bit detected: %v %vus\n", edgeToBit[event.Edge], delta.Microseconds())
 			return
 		}
 
 		d.receivedHalfBit = 0
 		d.invalidIntervalCount++
+		d.sendBit(Invalid)
+		//slog.Error("invalid interval detected, sending invalid bit: %vus", delta.Microseconds())
 		if d.invalidIntervalCount > invalidThreshold {
 			d.resynchronize()
 		}
@@ -313,8 +363,20 @@ func (d *Decoder) listenForEvents() {
 			if !ok {
 				return // Exit if the buffer channel is closed
 			}
-
 			d.eventHandler(evt)
 		}
+	}
+}
+
+// decodingTable returns the Manchester decoding lookup table for the given encoding type.
+// maps Edge events to decoded Bits
+func decodingTable(code ManchesterEncoding) [2]Bit {
+	switch code {
+	case IEEE:
+		return [2]Bit{FallingEdge: High, RisingEdge: Low}
+	case Thomas:
+		return [2]Bit{FallingEdge: Low, RisingEdge: High}
+	default:
+		panic("unsupported Manchester encoding")
 	}
 }

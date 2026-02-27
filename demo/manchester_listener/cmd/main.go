@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"time"
@@ -17,7 +18,9 @@ import (
 )
 
 func main() {
-	gpioLine := flag.Int("gpioline", 21, "GPIO pin number")
+	gpioLine := flag.Int("gpioline", 20, "GPIO pin number")
+	bitClock := flag.Int("bitClock", 50, "bit clock in Hz")
+	thomas := flag.Bool("thomas", false, "use 'Differential Manchester/Thomas' encoding instead of IEEE 802.3")
 
 	flag.Parse()
 
@@ -42,17 +45,25 @@ func main() {
 	defer cancel()
 
 	// Watch for rising and falling edges
-	gpioEvents, err := gpioPin.Watch(ctx, gpio.RisingEdge|gpio.FallingEdge)
+	gpioEvents, err := gpioPin.WatchCh(ctx, gpio.RisingEdge|gpio.FallingEdge)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	encoding := decoder.IEEE
+	if *thomas {
+		encoding = decoder.Thomas
 	}
 
 	log.Printf("GPIO Pin %d: %s", gpioPin.Number(), gpioPin.Info())
 	log.Printf("Listening on GPIO Pin %d", gpioPin.Number())
 
 	decoderEvents := make(chan decoder.Event, 1024)
-	dec := decoder.New(decoderEvents)
+	dec := decoder.New(decoderEvents, *bitClock,
+		decoder.WithManchesterEncoding(encoding))
 	defer dec.Close()
+
+	log.Printf("decoder info: %s", dec.Info())
 
 	// --- Goroutine 1: GPIO → Decoder ---
 	go func() {
@@ -91,20 +102,29 @@ func main() {
 				if !ok {
 					return
 				}
+				if bit == decoder.Invalid {
+					slog.Warn("invalid bit received, resetting")
+					b = 0
+					bitCount = 0
+					continue
+				}
+
 				if bit != decoder.Low && bit != decoder.High {
 					continue
 				}
 
 				switch bitCount {
 				case 0: // Startbit = 0
+
 					if bit == decoder.Low {
 						b = 0
 						bitCount++
 					}
 				case 9: // Stopbit = 1
 					if bit == decoder.High {
-						fmt.Print(b)
+						fmt.Print(string(b))
 					}
+
 					b = 0
 					bitCount = 0
 				default:
@@ -119,6 +139,4 @@ func main() {
 	<-ctx.Done()
 	log.Printf("Encoder Info: %s", dec.Info())
 	log.Println("Interrupt received, stopping...")
-	gpioPin.Close()
-	dec.Close()
 }
