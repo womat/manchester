@@ -22,7 +22,7 @@ func main() {
 	bitClock := flag.Int("bitClock", 50, "bit clock in Hz")
 	msb := flag.Bool("msb", false, "Use MSB instead of LSB")
 	thomas := flag.Bool("thomas", false, "use 'Differential Manchester/Thomas' encoding instead of IEEE 802.3")
-	sync := flag.Int("sync", 0, "number of sync bytes to send before the message")
+	sync := flag.Int("sync", 1, "number of sync bytes (0xff) to send before the message")
 	flag.Parse()
 
 	if flag.NArg() == 0 {
@@ -30,15 +30,13 @@ func main() {
 	}
 	msg := []byte(flag.Arg(0))
 
-	gpioPin, err := rpi.NewPin(*gpioLine)
+	gpioPin, err := rpi.NewPin(*gpioLine,
+		rpi.WithMode(gpio.Output))
+
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer gpioPin.Close()
-
-	if err = gpioPin.SetMode(gpio.Output); err != nil {
-		log.Fatal(err)
-	}
 
 	log.Printf("GPIO Pin %d: %s", gpioPin.Number(), gpioPin.Info())
 

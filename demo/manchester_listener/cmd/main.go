@@ -24,21 +24,16 @@ func main() {
 
 	flag.Parse()
 
-	gpioPin, err := rpi.NewPin(*gpioLine)
+	gpioPin, err := rpi.NewPin(*gpioLine,
+		rpi.WithMode(gpio.Input),
+		rpi.WithPullup(gpio.PullUp),
+		rpi.WithDebounce(time.Duration(0)*time.Millisecond),
+	)
+
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer gpioPin.Close()
-
-	if err = gpioPin.SetMode(gpio.Input); err != nil {
-		log.Fatal(err)
-	}
-	if err = gpioPin.SetPullMode(gpio.PullUp); err != nil {
-		log.Fatal(err)
-	}
-	if err = gpioPin.SetDebounce(time.Duration(0) * time.Millisecond); err != nil {
-		log.Fatal(err)
-	}
 
 	// Create a context to control watching lifetime
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
