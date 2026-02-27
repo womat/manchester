@@ -24,7 +24,7 @@
 //            return pin.SetValue(level)
 //        }
 //
-//        // Create encoder with 50Hz carrier, LSB first, 2 sync bytes
+//        // Create encoder with 50Hz bit clock, LSB first, 2 sync bytes
 //        enc := encoder.New(
 //            50,
 //            setValue,
@@ -39,7 +39,7 @@
 //            log.Fatal(err)
 //        }
 // 	  // Wait for transmission to complete
-// 	  enc.Flush()
+// 	  enc.Wait()
 //    }
 
 package encoder
@@ -51,68 +51,84 @@ import (
 	"time"
 )
 
-const (
-	Low  = 0 // Low represents a low signal level.
-	High = 1 // High represents a high signal level.
-)
+// SetValue is a function type that sets the GPIO output level.
+type SetValue func(Level) error
 
+// txByte represents a byte to transmit along with a flag indicating whether to add start/stop bits.
+type txByte struct {
+	b            byte // Byte to transmit
+	addStartStop bool // Add start/stop bits
+}
+
+type Level int
 type BitOrder int
 type Option func(*Encoder)
+
+// ManchesterEncoding represents the type of Manchester encoding to use.
+type ManchesterEncoding int
+
+const (
+	Low  Level = 0 // Low represents a low signal level.
+	High Level = 1 // High represents a high signal level.
+)
 
 const (
 	LSBFirst BitOrder = iota
 	MSBFirst
 )
 
+const (
+	IEEE ManchesterEncoding = iota
+	Thomas
+)
+
 var ErrEncoderStopped = errors.New("encoder stopped")
 
 // Encoder implements a Manchester encoder that runs in the background.
 type Encoder struct {
-	writeMutex  sync.Mutex   // Mutex to synchronize Write() access
-	carrierFreq uint         // Carrier frequency in Hz (e.g., 50 Hz)
-	bitOrder    BitOrder     // Order of bits: LSBFirst or MSBFirst
-	syncBytes   int          // Number of 0xFF bytes for synchronization before actual data
-	buffer      chan frame   // Buffered channel for outgoing frames
-	bitTicker   *time.Ticker // Ticker for timing bit transitions
-	setValue    SetValue     // Function to set the GPIO output level
-	bufferSize  int
+	writeMutex         sync.Mutex   // Mutex to synchronize Write() access
+	bitClockHz         int          // frequency in Hz (e.g., 50 Hz)
+	bitOrder           BitOrder     // Order of bits: LSBFirst or MSBFirst
+	syncBytes          int          // Number of 0xFF bytes for synchronization before actual data
+	buffer             chan txByte  // Buffered channel for outgoing frames
+	halfBitTicker      *time.Ticker // Ticker for Manchester half-bit transitions
+	setValue           SetValue     // Function to set the GPIO output level
+	bufferSize         int
+	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
+	encodingTable      [2][2]Level        // Manchester encoding lookup table: [bit][half-step]
 
-	stop chan struct{}  // Channel to stop the Encoder
-	wg   sync.WaitGroup // WaitGroup to track the encoder goroutine
+	stop    chan struct{}  // Channel to stop the Encoder
+	wg      sync.WaitGroup // WaitGroup to track the encoder goroutine
+	wgBytes sync.WaitGroup // tracks bytes that are fully transmitted
+
 }
 
-// SetValue is a function type that sets the GPIO output level.
-type SetValue func(int) error
-
-type frame struct {
-	b       byte // Byte to be encoded
-	framing bool // If true, add start/stop bits
-}
-
-// New creates a new Manchester encoder with the specified carrier frequency.
-func New(carrierFreq uint, setValue SetValue, opts ...Option) *Encoder {
-	if carrierFreq <= 0 {
-		panic("carrierFreq must be > 0")
+// New creates a new Manchester encoder with the specified bit clock frequency.
+func New(bitClockHz int, setValue SetValue, opts ...Option) *Encoder {
+	if bitClockHz <= 0 {
+		panic("bitClockHz must be > 0")
 	}
 	e := &Encoder{
-		carrierFreq: carrierFreq,
-		bitOrder:    LSBFirst,
-		syncBytes:   2,
-		bufferSize:  1024,
-		setValue:    setValue,
-		stop:        make(chan struct{}),
+		bitClockHz:         bitClockHz,
+		bitOrder:           LSBFirst,
+		syncBytes:          2,
+		bufferSize:         1024,
+		setValue:           setValue,
+		stop:               make(chan struct{}),
+		manchesterEncoding: IEEE,
 	}
 
 	for _, opt := range opts {
 		opt(e)
 	}
 
-	bitPeriod := time.Second / time.Duration(carrierFreq)
-	e.buffer = make(chan frame, e.bufferSize)
-	e.bitTicker = time.NewTicker(bitPeriod / 2)
+	bitPeriod := time.Second / time.Duration(bitClockHz)
+	e.halfBitTicker = time.NewTicker(bitPeriod / 2)
+	e.encodingTable = encodingTable(e.manchesterEncoding)
+	e.buffer = make(chan txByte, e.bufferSize)
 
 	e.wg.Add(1)
-	go e.listenForFrames()
+	go e.processTxBytes()
 	return e
 }
 
@@ -148,36 +164,36 @@ func WithoutSync() Option {
 	}
 }
 
+// WithManchesterEncoding sets the type of Manchester encoding (e.g., IEEE or Thomas).
+func WithManchesterEncoding(enc ManchesterEncoding) Option {
+	return func(e *Encoder) {
+		e.manchesterEncoding = enc
+		e.encodingTable = encodingTable(enc)
+	}
+}
+
 // Close gracefully shuts down the encoder.
 func (e *Encoder) Close() error {
+	// Signal stop to prevent new writes
 	close(e.stop)
+
+	// Close buffer to let listener finish draining
+	close(e.buffer)
+
+	// Wait for background goroutine to finish
 	e.wg.Wait()
 
-	if e.bitTicker != nil {
-		e.bitTicker.Stop()
+	// Stop ticker after goroutine finished
+	if e.halfBitTicker != nil {
+		e.halfBitTicker.Stop()
 	}
+
 	return nil
 }
 
-// Flush waits until all buffered frames have been transmitted.
-func (e *Encoder) Flush() {
-	halfBitDuration := time.Second / time.Duration(e.carrierFreq*2)
-
-	for {
-		e.writeMutex.Lock()
-		bufferLen := len(e.buffer)
-		e.writeMutex.Unlock()
-
-		if bufferLen == 0 {
-			// Buffer is empty → wait a little to ensure the last bit is fully transmitted
-			time.Sleep(2 * halfBitDuration) // Stop bit + last half-bit
-			return
-		}
-
-		// Buffer is not empty → wait for all bytes in the buffer
-		waitTime := time.Duration(20*bufferLen) * halfBitDuration // 10 bits per byte * 2 half-bits
-		time.Sleep(waitTime)
-	}
+// Wait waits until all buffered frames have been transmitted.
+func (e *Encoder) Wait() {
+	e.wgBytes.Wait() // block until all bytes fully transmitted
 }
 
 // Write places data into the buffer for transmission.
@@ -188,7 +204,8 @@ func (e *Encoder) Write(data []byte) (int, error) {
 	// Send sync bytes
 	for i := 0; i < e.syncBytes; i++ {
 		select {
-		case e.buffer <- frame{b: 0xff, framing: false}:
+		case e.buffer <- txByte{b: 0xff, addStartStop: false}:
+			e.wgBytes.Add(1)
 		case <-e.stop:
 			return 0, ErrEncoderStopped
 		}
@@ -197,7 +214,8 @@ func (e *Encoder) Write(data []byte) (int, error) {
 	// Send data bytes
 	for _, b := range data {
 		select {
-		case e.buffer <- frame{b: b, framing: true}:
+		case e.buffer <- txByte{b: b, addStartStop: true}:
+			e.wgBytes.Add(1)
 		case <-e.stop:
 			return 0, ErrEncoderStopped
 		}
@@ -206,43 +224,39 @@ func (e *Encoder) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-// encodeByte converts a byte into Manchester-coded bits and transmits it.
-func (e *Encoder) encodeFrame(f frame) {
+// encodeByte encodes a single byte and transmits it with optional start/stop bits.
+func (e *Encoder) encodeByte(b byte, addStartStop bool) {
 
-	if f.framing {
-		e.encodeBit(Low) // Start bit (0)
+	defer e.wgBytes.Done() // mark this byte as fully transmitted
+
+	if addStartStop {
+		e.encodeBit(byte(Low)) // Start bit (0)
 	}
 
 	switch e.bitOrder {
 	case LSBFirst: //  Bit 0 to Bit 7
 		for i := 0; i < 8; i++ {
-			e.encodeBit((f.b >> i) & 1)
+			e.encodeBit((b >> i) & 1)
 		}
 	case MSBFirst: //  Bit 7 to Bit 0
 		for i := 7; i >= 0; i-- {
-			e.encodeBit((f.b >> i) & 1)
+			e.encodeBit((b >> i) & 1)
 		}
 	}
 
-	if f.framing {
-		e.encodeBit(High) // Stop bit (1)
+	if addStartStop {
+		e.encodeBit(byte(High)) // Stop bit (1)
 	}
-}
-
-// Manchester encoding lookup table: [bit][half-step]
-var manchester = [2][2]int{
-	Low:  {Low, High},
-	High: {High, Low},
 }
 
 // encodeBit sends a single Manchester-encoded bit.
 func (e *Encoder) encodeBit(bit byte) {
 	// Define the two half-bit levels based on Manchester coding
-	for _, v := range manchester[bit] {
+	for _, v := range e.encodingTable[bit] {
 		e.setBit(v)
 
 		select {
-		case <-e.bitTicker.C:
+		case <-e.halfBitTicker.C:
 		case <-e.stop:
 			return
 		}
@@ -250,30 +264,36 @@ func (e *Encoder) encodeBit(bit byte) {
 }
 
 // setBit sets the GPIO level and logs any error.
-func (e *Encoder) setBit(v int) {
+func (e *Encoder) setBit(v Level) {
 	if err := e.setValue(v); err != nil {
 		slog.Error("setValue error:", err)
 	}
 }
 
-// listenForFrames launches the encoder in a background goroutine.
-func (e *Encoder) listenForFrames() {
+// processTxBytes runs in the background and transmits bytes from the buffer.
+func (e *Encoder) processTxBytes() {
 	defer e.wg.Done()
 
-	for {
-		select {
-		case f := <-e.buffer:
-			e.encodeFrame(f)
-		case <-e.stop:
-			// Drain remaining frames
-			for {
-				select {
-				case f := <-e.buffer:
-					e.encodeFrame(f)
-				default:
-					return
-				}
-			}
+	// Iterate over channel until it's closed and drained
+	for tx := range e.buffer {
+		e.encodeByte(tx.b, tx.addStartStop)
+	}
+}
+
+// encodingTable returns the Manchester encoding lookup table for the given encoding type.
+func encodingTable(code ManchesterEncoding) [2][2]Level {
+	switch code {
+	case IEEE:
+		return [2][2]Level{
+			High: {Low, High},
+			Low:  {High, Low},
 		}
+	case Thomas:
+		return [2][2]Level{
+			High: {High, Low},
+			Low:  {Low, High},
+		}
+	default:
+		panic("unsupported Manchester encoding")
 	}
 }
