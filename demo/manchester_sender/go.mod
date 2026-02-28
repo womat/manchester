@@ -1,4 +1,4 @@
-module github.com/womat/golib/demo/manchaster_sender
+module github.com/womat/golib/demo/manchester_sender
 
 go 1.26.0
 
