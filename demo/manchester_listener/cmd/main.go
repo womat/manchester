@@ -55,7 +55,10 @@ func main() {
 
 	decoderEvents := make(chan decoder.Event, 1024)
 	dec := decoder.New(decoderEvents, *bitClock,
-		decoder.WithManchesterEncoding(encoding))
+		decoder.WithManchesterEncoding(encoding),
+		// comment out the next line to disable debug logging in the decoder
+		decoder.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+	)
 	defer dec.Close()
 
 	log.Printf("decoder info: %s", dec.Info())

@@ -11,6 +11,7 @@ package main
 import (
 	"flag"
 	"log"
+	"log/slog"
 
 	"github.com/womat/golib/gpio"
 	"github.com/womat/golib/gpio/rpi"
@@ -57,7 +58,10 @@ func main() {
 		encoder.WithBitOrder(order),
 		encoder.WithSyncBytes(*sync),
 		encoder.WithManchesterEncoding(encoding),
+		// comment out the next line to disable debug logging in the encoder
+		encoder.WithErrorHandler(func(err error) { slog.Error("encoder GPIO error", "error", err) }),
 	)
+
 	defer enc.Close()
 	_, err = enc.Write(msg)
 	if err != nil {

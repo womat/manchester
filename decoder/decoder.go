@@ -24,6 +24,7 @@ package decoder
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -95,6 +96,7 @@ type Decoder struct {
 	eventC chan Event    // Input channel for GPIO events
 	stop   chan struct{} // Stop signal channel
 	wg     sync.WaitGroup
+	logger *slog.Logger // Optional logger for debugging and info
 }
 
 // New creates a new Decoder instance, initializes channels, and starts the decoding goroutine
@@ -145,6 +147,14 @@ func WithManchesterEncoding(enc ManchesterEncoding) Option {
 	return func(e *Decoder) {
 		e.manchesterEncoding = enc
 		e.decodingTable = decodingTable(enc)
+	}
+}
+
+// WithLogger sets an optional logger for debug output during decoding.
+// If not set, no logging is performed.
+func WithLogger(l *slog.Logger) Option {
+	return func(d *Decoder) {
+		d.logger = l
 	}
 }
 
@@ -238,7 +248,9 @@ func (d *Decoder) eventHandler(event Event) {
 			d.receivedHalfBit = 0
 			d.invalidIntervalCount = 0
 			d.sendBit(d.decodingTable[event.Edge])
-			// fmt.Printf(" full bit detected: %v %vus\n", edgeToBit[event.Edge], delta.Microseconds())
+			if d.logger != nil {
+				d.logger.Debug("full bit detected", "edge", d.decodingTable[event.Edge], "delta", delta.Microseconds())
+			}
 			return
 		}
 
@@ -253,14 +265,18 @@ func (d *Decoder) eventHandler(event Event) {
 			// second half bit detected >> it's a 1 or 0 depending on the edge
 			d.receivedHalfBit = 0
 			d.sendBit(d.decodingTable[event.Edge])
-			// fmt.Printf(" half bit detected: %v %vus\n", edgeToBit[event.Edge], delta.Microseconds())
+			if d.logger != nil {
+				d.logger.Debug("half bit detected", "edge", d.decodingTable[event.Edge], "delta", delta.Microseconds())
+			}
 			return
 		}
 
 		d.receivedHalfBit = 0
 		d.invalidIntervalCount++
 		d.sendBit(Invalid)
-		//slog.Error("invalid interval detected, sending invalid bit: %vus", delta.Microseconds())
+		if d.logger != nil {
+			d.logger.Debug("invalid interval detected, sending invalid bit", "delta", delta.Microseconds())
+		}
 		if d.invalidIntervalCount > invalidThreshold {
 			d.resynchronize()
 		}

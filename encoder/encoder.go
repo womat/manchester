@@ -46,7 +46,7 @@ package encoder
 
 import (
 	"errors"
-	"log/slog"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -96,6 +96,7 @@ type Encoder struct {
 	bufferSize         int                // Size of the internal buffer channel
 	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
 	encodingTable      [2][2]Level        // Manchester encoding lookup table: [bit][half-step]
+	onError            func(err error)    // Optional error handler callback
 
 	stop    chan struct{}  // Channel to stop the Encoder
 	wg      sync.WaitGroup // WaitGroup to track the encoder goroutine
@@ -161,6 +162,14 @@ func WithBufferSize(size int) Option {
 func WithoutSync() Option {
 	return func(e *Encoder) {
 		e.syncBytes = 0
+	}
+}
+
+// WithErrorHandler sets a callback that is called when a GPIO error occurs during transmission.
+// If not set, GPIO errors are silently ignored.
+func WithErrorHandler(fn func(err error)) Option {
+	return func(e *Encoder) {
+		e.onError = fn
 	}
 }
 
@@ -266,7 +275,9 @@ func (e *Encoder) encodeBit(bit byte) {
 // setBit sets the GPIO level and logs any error.
 func (e *Encoder) setBit(v Level) {
 	if err := e.setValue(v); err != nil {
-		slog.Error("setValue error:", err)
+		if e.onError != nil {
+			e.onError(fmt.Errorf("failed to set GPIO level: %w", err))
+		}
 	}
 }
 
