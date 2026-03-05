@@ -106,7 +106,7 @@ type Decoder struct {
 // The context controls the lifetime of the decoder - cancel it to stop decoding.
 // If bitClockHz > 0, clock discovery is skipped and the bit periods are calculated directly.
 // Call Close() after cancellation to wait for clean shutdown and release resources.
-func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) *Decoder {
+func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
 	d := &Decoder{
 		eventC:            c,
 		done:              make(chan struct{}),
@@ -119,7 +119,13 @@ func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) *Dec
 		opt(d)
 	}
 
-	d.decodingTable = decodingTable(d.manchesterEncoding)
+	// validate manchesterEncoding after options are applied
+	switch d.manchesterEncoding {
+	case IEEE, Thomas:
+		d.decodingTable = decodingTable(d.manchesterEncoding)
+	default:
+		return nil, fmt.Errorf("unsupported Manchester encoding: %v", d.manchesterEncoding)
+	}
 
 	d.C = make(chan Bit, d.bufferSize)
 	if bitClockHz > 0 {
@@ -133,7 +139,7 @@ func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) *Dec
 
 	// Start the decoding process in a separate goroutine.
 	go d.listenForEvents(ctx)
-	return d
+	return d, nil
 }
 
 func WithBufferSize(size int) Option {
@@ -144,11 +150,11 @@ func WithBufferSize(size int) Option {
 	}
 }
 
-// WithManchesterEncoding sets the type of Manchester encoding (e.g., IEEE or Thomas).
+// WithManchesterEncoding sets the type of Manchester encoding (IEEE or Thomas).
+// An invalid encoding will be rejected by New() with an error.
 func WithManchesterEncoding(enc ManchesterEncoding) Option {
-	return func(e *Decoder) {
-		e.manchesterEncoding = enc
-		e.decodingTable = decodingTable(enc)
+	return func(d *Decoder) {
+		d.manchesterEncoding = enc
 	}
 }
 
@@ -352,7 +358,6 @@ func (d *Decoder) sendBit(bit Bit) {
 	default:
 		d.bufferOverflowCount.Add(1)
 	}
-	return
 }
 
 // resynchronize resets the decoder state in case of too many invalid intervals
@@ -363,14 +368,12 @@ func (d *Decoder) resynchronize() {
 	d.clockEventSamples = d.clockEventSamples[:0] // reset the slice without reallocating (keep capacity)
 	d.invalidIntervalCount = 0
 	d.receivedHalfBit = 0
-	d.lastTimestamp = time.Time{} // wichtig!
+	d.lastTimestamp = time.Time{} // reset timestamp to avoid stale delta calculation on next event
 }
 
 // listenForEvents listens for events from eventC and processes them asynchronously
 func (d *Decoder) listenForEvents(ctx context.Context) {
-	defer func() {
-		close(d.done)
-	}()
+	defer close(d.done)
 
 	for {
 		select {
@@ -389,11 +392,10 @@ func (d *Decoder) listenForEvents(ctx context.Context) {
 // maps Edge events to decoded Bits
 func decodingTable(code ManchesterEncoding) [2]Bit {
 	switch code {
-	case IEEE:
-		return [2]Bit{FallingEdge: High, RisingEdge: Low}
 	case Thomas:
 		return [2]Bit{FallingEdge: Low, RisingEdge: High}
+		// default IEEE
 	default:
-		panic("unsupported Manchester encoding")
+		return [2]Bit{FallingEdge: High, RisingEdge: Low}
 	}
 }

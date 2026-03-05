@@ -54,11 +54,14 @@ func main() {
 	log.Printf("Listening on GPIO Pin %d", gpioPin.Number())
 
 	decoderEvents := make(chan decoder.Event, 1024)
-	dec := decoder.New(ctx, decoderEvents, *bitClock,
+	dec, err := decoder.New(ctx, decoderEvents, *bitClock,
 		decoder.WithManchesterEncoding(encoding),
 		// comment out the next line to disable debug logging in the decoder
 		decoder.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer dec.Close()
 
 	log.Printf("decoder info: %s", dec.Info())
