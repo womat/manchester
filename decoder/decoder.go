@@ -19,14 +19,18 @@
 // Channels:
 //   - `C`: Outputs decoded bits (High/Low/Invalid).
 //   - `eventC`: Receives GPIO events (rising and falling edges).
-//   - `stop`: Signals termination of the decoding process.
+//
+// Lifecycle:
+//
+//	The decoder runs until the context passed to New() is cancelled.
+//	Call Close() after cancellation to wait for a clean shutdown.
 package decoder
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sort"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -94,19 +98,18 @@ type Decoder struct {
 
 	C      chan Bit      // Output channel for decoded bits
 	eventC chan Event    // Input channel for GPIO events
-	stop   chan struct{} // Stop signal channel
-	wg     sync.WaitGroup
-	logger *slog.Logger // Optional logger for debugging and info
+	done   chan struct{} // Stop signal channel
+	logger *slog.Logger  // Optional logger for debugging and info
 }
 
-// New creates a new Decoder instance, initializes channels, and starts the decoding goroutine
-// The state machine is set up to discover the clock first before proceeding to data decoding.
-// This approach avoids premature decoding and ensures proper synchronization.
-func New(c chan Event, bitClockHz int, opts ...Option) *Decoder {
+// New creates a new Decoder instance, initializes channels, and starts the decoding goroutine.
+// The context controls the lifetime of the decoder - cancel it to stop decoding.
+// If bitClockHz > 0, clock discovery is skipped and the bit periods are calculated directly.
+// Call Close() after cancellation to wait for clean shutdown and release resources.
+func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) *Decoder {
 	d := &Decoder{
 		eventC:            c,
-		stop:              make(chan struct{}),
-		wg:                sync.WaitGroup{},
+		done:              make(chan struct{}),
 		clockEventSamples: make([]time.Duration, 0, clockEventSamples),
 		state:             discoverClock,
 		bufferSize:        1024,
@@ -128,9 +131,8 @@ func New(c chan Event, bitClockHz int, opts ...Option) *Decoder {
 		d.state = decodeData // Skip clock discovery if frequency is known
 	}
 
-	d.wg.Add(1)
 	// Start the decoding process in a separate goroutine.
-	go d.listenForEvents()
+	go d.listenForEvents(ctx)
 	return d
 }
 
@@ -160,11 +162,9 @@ func WithLogger(l *slog.Logger) Option {
 
 // Close stops the decoder, waits for the goroutine, and closes output channels
 func (d *Decoder) Close() error {
-	close(d.stop)
-
-	// Wait until the run() function completes, ensuring that the goroutine terminates properly.
-	d.wg.Wait()
-
+	// shutdown is triggered by cancelling the context passed to New().
+	// Close() waits until listenForEvents() has terminated.
+	<-d.done
 	close(d.C)
 	return nil
 }
@@ -367,13 +367,14 @@ func (d *Decoder) resynchronize() {
 }
 
 // listenForEvents listens for events from eventC and processes them asynchronously
-func (d *Decoder) listenForEvents() {
-
-	defer d.wg.Done()
+func (d *Decoder) listenForEvents(ctx context.Context) {
+	defer func() {
+		close(d.done)
+	}()
 
 	for {
 		select {
-		case <-d.stop:
+		case <-ctx.Done():
 			return
 		case evt, ok := <-d.eventC:
 			if !ok {
