@@ -40,7 +40,7 @@ func main() {
 	defer cancel()
 
 	// Watch for rising and falling edges
-	gpioEvents, err := gpioPin.WatchCh(ctx, gpio.RisingEdge|gpio.FallingEdge)
+	gpioEvents, err := gpioPin.WatchCh(gpio.RisingEdge | gpio.FallingEdge)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func main() {
 	log.Printf("Listening on GPIO Pin %d", gpioPin.Number())
 
 	decoderEvents := make(chan decoder.Event, 1024)
-	dec, err := decoder.New(ctx, decoderEvents, *bitClock,
+	dec, err := decoder.New(decoderEvents, *bitClock,
 		decoder.WithManchesterEncoding(encoding),
 		// comment out the next line to disable debug logging in the decoder
 		decoder.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
@@ -97,46 +97,39 @@ func main() {
 	go func() {
 		var b byte
 		var bitCount int
-		for {
-			select {
-			case bit, ok := <-dec.C:
-				if !ok {
-					return
-				}
-				if bit == decoder.Invalid {
-					slog.Warn("invalid bit received, resetting")
+		for bit := range dec.Bits() {
+			if bit == decoder.Invalid {
+				slog.Warn("invalid bit received, resetting")
+				b = 0
+				bitCount = 0
+				continue
+			}
+
+			if bit != decoder.Low && bit != decoder.High {
+				continue
+			}
+
+			switch bitCount {
+			case 0: // Startbit = 0
+
+				if bit == decoder.Low {
 					b = 0
-					bitCount = 0
-					continue
-				}
-
-				if bit != decoder.Low && bit != decoder.High {
-					continue
-				}
-
-				switch bitCount {
-				case 0: // Startbit = 0
-
-					if bit == decoder.Low {
-						b = 0
-						bitCount++
-					}
-				case 9: // Stopbit = 1
-					if bit == decoder.High {
-						fmt.Print(string(b))
-					}
-
-					b = 0
-					bitCount = 0
-				default:
-					b |= byte(bit) << (bitCount - 1)
 					bitCount++
 				}
-			case <-ctx.Done():
-				return
+			case 9: // Stopbit = 1
+				if bit == decoder.High {
+					fmt.Print(string(b))
+				}
+
+				b = 0
+				bitCount = 0
+			default:
+				b |= byte(bit) << (bitCount - 1)
+				bitCount++
 			}
 		}
 	}()
+
 	<-ctx.Done()
 	log.Printf("Encoder Info: %s", dec.Info())
 	log.Println("Interrupt received, stopping...")

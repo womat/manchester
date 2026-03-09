@@ -17,13 +17,14 @@
 // - Graceful shutdown mechanism to properly close channels and wait for background tasks to finish.
 //
 // Channels:
-//   - `C`: Outputs decoded bits (High/Low/Invalid).
-//   - `eventC`: Receives GPIO events (rising and falling edges).
+//   - Bits(): Returns a read-only channel on which decoded bits (High/Low/Invalid) are delivered.
+//   - eventC: Receives GPIO events (rising and falling edges).
 //
 // Lifecycle:
 //
-//	The decoder runs until the context passed to New() is cancelled.
-//	Call Close() after cancellation to wait for a clean shutdown.
+//	d, err := decoder.New(eventCh, 50, decoder.WithManchesterEncoding(decoder.IEEE))
+//	for bit := range d.Bits() { ... }
+//	d.Close() // stops the decoder and waits for clean shutdown
 package decoder
 
 import (
@@ -31,6 +32,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -96,20 +98,20 @@ type Decoder struct {
 	bufferOverflowCount atomic.Uint64 // Count of buffer overflows when sending bits
 	resyncCount         atomic.Uint64 // Count of resynchronizations due to invalid intervals
 
-	C      chan Bit      // Output channel for decoded bits
-	eventC chan Event    // Input channel for GPIO events
-	done   chan struct{} // Stop signal channel
-	logger *slog.Logger  // Optional logger for debugging and info
+	eventC <-chan Event // Input channel for GPIO events
+	c      chan Bit     // Output channel for decoded bits
+
+	wg     sync.WaitGroup
+	cancel context.CancelFunc
+	logger *slog.Logger // Optional logger for debugging and info
 }
 
 // New creates a new Decoder instance, initializes channels, and starts the decoding goroutine.
-// The context controls the lifetime of the decoder - cancel it to stop decoding.
 // If bitClockHz > 0, clock discovery is skipped and the bit periods are calculated directly.
-// Call Close() after cancellation to wait for clean shutdown and release resources.
-func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
+// Call Close() to stop the decoder and wait for a clean shutdown.
+func New(c <-chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
 	d := &Decoder{
 		eventC:            c,
-		done:              make(chan struct{}),
 		clockEventSamples: make([]time.Duration, 0, clockEventSamples),
 		state:             discoverClock,
 		bufferSize:        1024,
@@ -127,7 +129,7 @@ func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) (*De
 		return nil, fmt.Errorf("unsupported Manchester encoding: %v", d.manchesterEncoding)
 	}
 
-	d.C = make(chan Bit, d.bufferSize)
+	d.c = make(chan Bit, d.bufferSize)
 	if bitClockHz > 0 {
 		// If a frequency is provided, calculate the expected bit periods and tolerances directly.
 		d.fullBitTime = time.Duration(int64(time.Second) / int64(bitClockHz))
@@ -138,6 +140,10 @@ func New(ctx context.Context, c chan Event, bitClockHz int, opts ...Option) (*De
 	}
 
 	// Start the decoding process in a separate goroutine.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.cancel = cancel
+	d.wg.Add(1)
 	go d.listenForEvents(ctx)
 	return d, nil
 }
@@ -166,13 +172,20 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// Close stops the decoder, waits for the goroutine, and closes output channels
+// Close stops the decoder by cancelling the internal context, waits for the
+// goroutine to finish, and closes the Bits() channel.
 func (d *Decoder) Close() error {
 	// shutdown is triggered by cancelling the context passed to New().
 	// Close() waits until listenForEvents() has terminated.
-	<-d.done
-	close(d.C)
+	d.cancel()
+	d.wg.Wait()
 	return nil
+}
+
+// Bits returns a read-only channel on which decoded bits are delivered.
+// The channel is closed when the decoder has shut down.
+func (d *Decoder) Bits() <-chan Bit {
+	return d.c
 }
 
 // Info returns a human-readable summary of the decoder's current state.
@@ -243,7 +256,7 @@ func (d *Decoder) eventHandler(event Event) {
 			d.fullBitTime = full
 			d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
 			d.fullBitTimeTolerance = d.fullBitTime * bitTimeTolerance / 100
-			d.clockEventSamples = nil
+			d.clockEventSamples = d.clockEventSamples[:0]
 			d.receivedHalfBit = 0
 			d.state = decodeData
 		}
@@ -354,7 +367,7 @@ func withinTolerance(value, reference, tolerance time.Duration) bool {
 // sendBit sends a bit to the output channel with non-blocking behavior
 func (d *Decoder) sendBit(bit Bit) {
 	select {
-	case d.C <- bit:
+	case d.c <- bit:
 	default:
 		d.bufferOverflowCount.Add(1)
 	}
@@ -373,7 +386,10 @@ func (d *Decoder) resynchronize() {
 
 // listenForEvents listens for events from eventC and processes them asynchronously
 func (d *Decoder) listenForEvents(ctx context.Context) {
-	defer close(d.done)
+	defer func() {
+		close(d.c)
+		d.wg.Done()
+	}()
 
 	for {
 		select {
