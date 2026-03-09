@@ -5,46 +5,34 @@
 //
 // Example usage:
 //
+//	func main() {
+//	    pin, err := rpi.NewPin(17, rpi.WithMode(gpio.Output))
+//	    if err != nil {
+//	        log.Fatal(err)
+//	    }
+//	    defer pin.Close()
 //
-//    func main() {
-//        // Initialize GPIO pin 17
-//        pin, err := rpi.NewPin(17)
-//        if err != nil {
-//            log.Fatal(err)
-//        }
-//        defer pin.Close()
+//	    enc := encoder.New(
+//	        50,
+//	        func(level encoder.Level) error {
+//	            return pin.SetValue(gpio.Level(level))
+//	        },
+//	        encoder.WithBitOrder(encoder.LSBFirst),
+//	        encoder.WithSyncBytes(2),
+//	    )
+//	    defer enc.Close()
 //
-//        // Configure as output
-//        if err := pin.SetMode(gpioemu.Output); err != nil {
-//            log.Fatal(err)
-//        }
-//
-//        // Create a SetValue function for the encoder
-//        setValue := func(level encoder.Level) error {
-//            return pin.SetValue(level)
-//        }
-//
-//        // Create encoder with 50Hz bit clock, LSB first, 2 sync bytes
-//        enc := encoder.New(
-//            50,
-//            setValue,
-//            encoder.WithBitOrder(encoder.LSBFirst),
-//            encoder.WithSyncBytes(2),
-//        )
-//        defer enc.Close()
-//
-//        // Send "Hallo World"
-//        _, err = enc.Write([]byte("Hallo World"))
-//        if err != nil {
-//            log.Fatal(err)
-//        }
-// 	  // Wait for transmission to complete
-// 	  enc.Wait()
-//    }
+//	    _, err = enc.Send([]byte("Hello World"))
+//	    if err != nil {
+//	        log.Fatal(err)
+//	    }
+//	    enc.Wait()
+//	}
 
 package encoder
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -98,9 +86,11 @@ type Encoder struct {
 	encodingTable      [2][2]Level        // Manchester encoding lookup table: [bit][half-step]
 	onError            func(err error)    // Optional error handler callback
 
-	stop    chan struct{}  // Channel to stop the Encoder
-	wg      sync.WaitGroup // WaitGroup to track the encoder goroutine
-	wgBytes sync.WaitGroup // tracks bytes that are fully transmitted
+	cancel    context.CancelFunc
+	ctx       context.Context
+	wg        sync.WaitGroup // WaitGroup to track the encoder goroutine
+	closeOnce sync.Once      // Ensures Close() is only executed once
+	wgBytes   sync.WaitGroup // tracks bytes that are fully transmitted
 
 }
 
@@ -115,7 +105,6 @@ func New(bitClockHz int, setValue SetValue, opts ...Option) *Encoder {
 		syncBytes:          2,
 		bufferSize:         1024,
 		setValue:           setValue,
-		stop:               make(chan struct{}),
 		manchesterEncoding: IEEE,
 	}
 
@@ -128,6 +117,7 @@ func New(bitClockHz int, setValue SetValue, opts ...Option) *Encoder {
 	e.encodingTable = encodingTable(e.manchesterEncoding)
 	e.buffer = make(chan txByte, e.bufferSize)
 
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 	e.wg.Add(1)
 	go e.processTxBytes()
 	return e
@@ -182,21 +172,25 @@ func WithManchesterEncoding(enc ManchesterEncoding) Option {
 }
 
 // Close gracefully shuts down the encoder.
+// It is safe to call Close multiple times.
 func (e *Encoder) Close() error {
-	// Signal stop to prevent new writes
-	close(e.stop)
+	e.closeOnce.Do(func() {
 
-	// Close buffer to let listener finish draining
-	close(e.buffer)
+		// Signal stop to prevent new writes
+		e.cancel()
 
-	// Wait for background goroutine to finish
-	e.wg.Wait()
+		// Lock to prevent new writes while closing
+		e.writeMutex.Lock()
+		// Close buffer to let listener finish draining
+		close(e.buffer)
+		e.writeMutex.Unlock()
 
-	// Stop ticker after goroutine finished
-	if e.halfBitTicker != nil {
+		// Wait for background goroutine to finish
+		e.wg.Wait()
+
+		// Stop ticker after goroutine finished
 		e.halfBitTicker.Stop()
-	}
-
+	})
 	return nil
 }
 
@@ -205,8 +199,9 @@ func (e *Encoder) Wait() {
 	e.wgBytes.Wait() // block until all bytes fully transmitted
 }
 
-// Write places data into the buffer for transmission.
-func (e *Encoder) Write(data []byte) (int, error) {
+// Send places data into the transmission buffer.
+// It blocks if the buffer is full and returns ErrEncoderStopped if Close() was called.
+func (e *Encoder) Send(data []byte) (int, error) {
 	e.writeMutex.Lock()
 	defer e.writeMutex.Unlock()
 
@@ -215,7 +210,7 @@ func (e *Encoder) Write(data []byte) (int, error) {
 		select {
 		case e.buffer <- txByte{b: 0xff, addStartStop: false}:
 			e.wgBytes.Add(1)
-		case <-e.stop:
+		case <-e.ctx.Done():
 			return 0, ErrEncoderStopped
 		}
 	}
@@ -225,7 +220,7 @@ func (e *Encoder) Write(data []byte) (int, error) {
 		select {
 		case e.buffer <- txByte{b: b, addStartStop: true}:
 			e.wgBytes.Add(1)
-		case <-e.stop:
+		case <-e.ctx.Done():
 			return 0, ErrEncoderStopped
 		}
 	}
@@ -235,8 +230,6 @@ func (e *Encoder) Write(data []byte) (int, error) {
 
 // encodeByte encodes a single byte and transmits it with optional start/stop bits.
 func (e *Encoder) encodeByte(b byte, addStartStop bool) {
-
-	defer e.wgBytes.Done() // mark this byte as fully transmitted
 
 	if addStartStop {
 		e.encodeBit(byte(Low)) // Start bit (0)
@@ -261,13 +254,19 @@ func (e *Encoder) encodeByte(b byte, addStartStop bool) {
 // encodeBit sends a single Manchester-encoded bit.
 func (e *Encoder) encodeBit(bit byte) {
 	// Define the two half-bit levels based on Manchester coding
+	select {
+	case <-e.ctx.Done():
+		return
+	default:
+	}
+
 	for _, v := range e.encodingTable[bit] {
 		e.setBit(v)
 
 		select {
-		case <-e.halfBitTicker.C:
-		case <-e.stop:
+		case <-e.ctx.Done():
 			return
+		case <-e.halfBitTicker.C:
 		}
 	}
 }
@@ -283,11 +282,25 @@ func (e *Encoder) setBit(v Level) {
 
 // processTxBytes runs in the background and transmits bytes from the buffer.
 func (e *Encoder) processTxBytes() {
+
 	defer e.wg.Done()
 
-	// Iterate over channel until it's closed and drained
-	for tx := range e.buffer {
-		e.encodeByte(tx.b, tx.addStartStop)
+	for {
+		select {
+		case <-e.ctx.Done():
+			// drain remaining bytes without transmitting them
+			for range e.buffer {
+				e.wgBytes.Done()
+			}
+			return
+		case tx, open := <-e.buffer:
+			if !open {
+				return
+			}
+
+			e.encodeByte(tx.b, tx.addStartStop)
+			e.wgBytes.Done() // mark this byte as fully transmitted
+		}
 	}
 }
 

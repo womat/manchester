@@ -63,7 +63,7 @@ func main() {
 	)
 
 	defer enc.Close()
-	_, err = enc.Write(msg)
+	_, err = enc.Send(msg)
 	if err != nil {
 		log.Fatal(err)
 	}
