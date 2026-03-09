@@ -57,7 +57,7 @@ func main() {
 	dec, err := decoder.New(decoderEvents, *bitClock,
 		decoder.WithManchesterEncoding(encoding),
 		// comment out the next line to disable debug logging in the decoder
-		decoder.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+		//	decoder.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 	)
 	if err != nil {
 		log.Fatal(err)
