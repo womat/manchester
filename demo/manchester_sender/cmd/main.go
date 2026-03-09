@@ -1,4 +1,4 @@
-// Command gpio-watch is a CLI tool for monitoring GPIO input events on a Raspberry Pi.
+// Command manchester-sender sends Manchester-encoded data over a GPIO pin.
 //
 // It allows selecting a GPIO pin, configuring rising and/or falling edge detection,
 // and optionally setting a debounce time in milliseconds. The program initializes

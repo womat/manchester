@@ -131,6 +131,6 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	log.Printf("Encoder Info: %s", dec.Info())
+	log.Printf("Decoder Info: %s", dec.Info())
 	log.Println("Interrupt received, stopping...")
 }

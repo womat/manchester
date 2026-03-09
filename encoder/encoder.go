@@ -167,7 +167,6 @@ func WithErrorHandler(fn func(err error)) Option {
 func WithManchesterEncoding(enc ManchesterEncoding) Option {
 	return func(e *Encoder) {
 		e.manchesterEncoding = enc
-		e.encodingTable = encodingTable(enc)
 	}
 }
 
