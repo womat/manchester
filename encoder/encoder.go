@@ -12,7 +12,7 @@
 //	    }
 //	    defer pin.Close()
 //
-//	    enc := encoder.New(
+//	    enc, err := encoder.New(
 //	        50,
 //	        func(level encoder.Level) error {
 //	            return pin.SetValue(gpio.Level(level))
@@ -20,6 +20,9 @@
 //	        encoder.WithBitOrder(encoder.LSBFirst),
 //	        encoder.WithSyncBytes(2),
 //	    )
+//	    if err != nil {
+//	        log.Fatal(err)
+//	    }
 //	    defer enc.Close()
 //
 //	    _, err = enc.Send([]byte("Hello World"))
@@ -95,11 +98,21 @@ type Encoder struct {
 
 }
 
-// New creates a new Manchester encoder with the specified bit clock frequency.
-func New(bitClockHz int, setValue SetValue, opts ...Option) *Encoder {
+// New creates a new Manchester encoder with the specified bit clock frequency
+// and starts the transmitting goroutine.
+//
+// It returns an error if bitClockHz is not positive, if setValue is nil, or if
+// an unsupported Manchester encoding was selected.
+// Call Close() to stop the encoder and wait for a clean shutdown.
+func New(bitClockHz int, setValue SetValue, opts ...Option) (*Encoder, error) {
 	if bitClockHz <= 0 {
-		panic("bitClockHz must be > 0")
+		return nil, fmt.Errorf("bit clock must be greater than 0, got %d", bitClockHz)
 	}
+
+	if setValue == nil {
+		return nil, errors.New("setValue must not be nil")
+	}
+
 	e := &Encoder{
 		bitClockHz:         bitClockHz,
 		bitOrder:           LSBFirst,
@@ -113,15 +126,22 @@ func New(bitClockHz int, setValue SetValue, opts ...Option) *Encoder {
 		opt(e)
 	}
 
+	// validate manchesterEncoding after options are applied
+	switch e.manchesterEncoding {
+	case IEEE, Thomas:
+		e.encodingTable = encodingTable(e.manchesterEncoding)
+	default:
+		return nil, fmt.Errorf("unsupported Manchester encoding: %v", e.manchesterEncoding)
+	}
+
 	bitPeriod := time.Second / time.Duration(bitClockHz)
 	e.halfBitPeriod = bitPeriod / 2
-	e.encodingTable = encodingTable(e.manchesterEncoding)
 	e.buffer = make(chan txByte, e.bufferSize)
 
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	e.wg.Add(1)
 	go e.processTxBytes()
-	return e
+	return e, nil
 }
 
 // WithBitOrder sets the bit order (LSB/MSB) for the encoder.
@@ -358,20 +378,22 @@ func (e *Encoder) processTxBytes() {
 	}
 }
 
-// encodingTable returns the Manchester encoding lookup table for the given encoding type.
+// encodingTable returns the Manchester encoding lookup table for the given
+// encoding type, mapping a bit to the levels of its two half-bits.
+//
+// Unsupported encodings are rejected by New(), so this falls back to IEEE.
 func encodingTable(code ManchesterEncoding) [2][2]Level {
 	switch code {
-	case IEEE:
-		return [2][2]Level{
-			High: {Low, High},
-			Low:  {High, Low},
-		}
 	case Thomas:
 		return [2][2]Level{
 			High: {High, Low},
 			Low:  {Low, High},
 		}
+		// default IEEE
 	default:
-		panic("unsupported Manchester encoding")
+		return [2][2]Level{
+			High: {Low, High},
+			Low:  {High, Low},
+		}
 	}
 }

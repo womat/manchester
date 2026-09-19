@@ -54,7 +54,7 @@ func main() {
 		encoding = encoder.Thomas
 	}
 
-	enc := encoder.New(*bitClock, setValue,
+	enc, err := encoder.New(*bitClock, setValue,
 		encoder.WithBitOrder(order),
 		encoder.WithSyncBytes(*sync),
 		encoder.WithManchesterEncoding(encoding),
@@ -62,9 +62,12 @@ func main() {
 		encoder.WithErrorHandler(func(err error) { slog.Error("encoder GPIO error", "error", err) }),
 	)
 
-	defer enc.Close()
-	_, err = enc.Send(msg)
 	if err != nil {
+		log.Fatal(err)
+	}
+	defer enc.Close()
+
+	if _, err = enc.Send(msg); err != nil {
 		log.Fatal(err)
 	}
 

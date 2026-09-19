@@ -77,12 +77,15 @@ func transmit(t *testing.T, data []byte, enc encoder.ManchesterEncoding, order e
 	t.Helper()
 
 	l := newLine()
-	e := encoder.New(bitClockHz, l.setValue,
+	e, err := encoder.New(bitClockHz, l.setValue,
 		encoder.WithManchesterEncoding(enc),
 		encoder.WithBitOrder(order),
 		encoder.WithSyncBytes(syncBytes),
 		encoder.WithErrorHandler(func(err error) { t.Errorf("encoder error: %v", err) }),
 	)
+	if err != nil {
+		t.Fatalf("encoder.New: %v", err)
+	}
 
 	if _, err := e.Send(data); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -273,10 +276,13 @@ func TestEncoderKeepsHalfBitPeriod(t *testing.T) {
 	tolerance := halfBit * 25 / 100
 
 	var times []time.Time
-	e := encoder.New(timingClockHz, func(encoder.Level) error {
+	e, err := encoder.New(timingClockHz, func(encoder.Level) error {
 		times = append(times, time.Now())
 		return nil
 	}, encoder.WithSyncBytes(0))
+	if err != nil {
+		t.Fatalf("encoder.New: %v", err)
+	}
 	defer e.Close()
 
 	if _, err := e.Send([]byte{0x00}); err != nil {
@@ -312,7 +318,10 @@ func TestEncoderKeepsHalfBitPeriod(t *testing.T) {
 // ErrEncoderStopped as documented.
 func TestSendAfterCloseReturnsError(t *testing.T) {
 	for i := 0; i < 50; i++ {
-		e := encoder.New(bitClockHz, func(encoder.Level) error { return nil })
+		e, err := encoder.New(bitClockHz, func(encoder.Level) error { return nil })
+		if err != nil {
+			t.Fatalf("encoder.New: %v", err)
+		}
 		if err := e.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
@@ -328,8 +337,11 @@ func TestSendAfterCloseReturnsError(t *testing.T) {
 // a Send that is already running while Close shuts the encoder down.
 func TestConcurrentSendAndClose(t *testing.T) {
 	for i := 0; i < 50; i++ {
-		e := encoder.New(bitClockHz, func(encoder.Level) error { return nil },
+		e, err := encoder.New(bitClockHz, func(encoder.Level) error { return nil },
 			encoder.WithSyncBytes(0), encoder.WithBufferSize(1))
+		if err != nil {
+			t.Fatalf("encoder.New: %v", err)
+		}
 
 		var wg sync.WaitGroup
 		wg.Add(2)
@@ -383,4 +395,50 @@ func TestDecoderInfoIsConcurrencySafe(t *testing.T) {
 		_ = d.Info()
 	}
 	<-done
+}
+
+// TestEncoderNewRejectsInvalidConfig covers the validation encoder.New gained
+// when it stopped panicking on invalid parameters, matching decoder.New.
+func TestEncoderNewRejectsInvalidConfig(t *testing.T) {
+	setValue := func(encoder.Level) error { return nil }
+
+	tests := []struct {
+		name     string
+		clockHz  int
+		setValue encoder.SetValue
+		opts     []encoder.Option
+	}{
+		{"zero bit clock", 0, setValue, nil},
+		{"negative bit clock", -1, setValue, nil},
+		{"nil setValue", bitClockHz, nil, nil},
+		{"unknown encoding", bitClockHz, setValue, []encoder.Option{encoder.WithManchesterEncoding(42)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := encoder.New(tt.clockHz, tt.setValue, tt.opts...)
+			if err == nil {
+				e.Close()
+				t.Fatal("New accepted an invalid configuration, want an error")
+			}
+			if e != nil {
+				t.Errorf("New returned a non-nil encoder alongside the error %v", err)
+			}
+		})
+	}
+}
+
+// TestEncoderNewAcceptsValidConfig is the counterpart: both encodings and a
+// plain configuration must still be accepted.
+func TestEncoderNewAcceptsValidConfig(t *testing.T) {
+	for _, enc := range []encoder.ManchesterEncoding{encoder.IEEE, encoder.Thomas} {
+		e, err := encoder.New(bitClockHz, func(encoder.Level) error { return nil },
+			encoder.WithManchesterEncoding(enc))
+		if err != nil {
+			t.Fatalf("New rejected encoding %v: %v", enc, err)
+		}
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
 }
