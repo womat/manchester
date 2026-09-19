@@ -50,6 +50,7 @@ package decoder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -140,12 +141,29 @@ type Decoder struct {
 }
 
 // New creates a new Decoder instance, initializes channels, and starts the decoding goroutine.
-// If bitClockHz > 0, clock discovery is skipped and the bit periods are calculated directly.
 // Call Close() to stop the decoder and wait for a clean shutdown.
+//
+// bitClockHz selects how the bit timing is established:
+//   - greater than zero: the bit periods are calculated from it directly and
+//     clock discovery is skipped.
+//   - zero: the bit periods are discovered from the incoming edges, which
+//     needs a continuous signal of several hundred edges before the first bit
+//     is reported.
+//
+// It returns an error if c is nil, if bitClockHz is negative, or if an
+// unsupported Manchester encoding was selected.
 //
 // The first bit of a transmission is never reported; see the package
 // documentation on framing.
 func New(c <-chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
+	if c == nil {
+		return nil, errors.New("event channel must not be nil")
+	}
+
+	if bitClockHz < 0 {
+		return nil, fmt.Errorf("bit clock must not be negative, got %d (use 0 for clock discovery)", bitClockHz)
+	}
+
 	d := &Decoder{
 		eventC:            c,
 		clockEventSamples: make([]time.Duration, 0, clockEventSamples),
