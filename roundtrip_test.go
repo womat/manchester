@@ -10,6 +10,8 @@
 package manchester_test
 
 import (
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -301,4 +303,84 @@ func TestEncoderKeepsHalfBitPeriod(t *testing.T) {
 				i-mark+1, d.Round(100*time.Microsecond), halfBit-tolerance)
 		}
 	}
+}
+
+// TestSendAfterCloseReturnsError is the regression test for a panic: Close()
+// closes the internal buffer, and Send() used to select on a send into that
+// channel afterwards. A send on a closed channel is "ready" in a select and
+// panics, so Send() panicked roughly every other call instead of returning
+// ErrEncoderStopped as documented.
+func TestSendAfterCloseReturnsError(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		e := encoder.New(bitClockHz, func(encoder.Level) error { return nil })
+		if err := e.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		n, err := e.Send([]byte("data"))
+		if !errors.Is(err, encoder.ErrEncoderStopped) {
+			t.Fatalf("Send after Close returned (%d, %v), want ErrEncoderStopped", n, err)
+		}
+	}
+}
+
+// TestConcurrentSendAndClose covers the same defect from the other side:
+// a Send that is already running while Close shuts the encoder down.
+func TestConcurrentSendAndClose(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		e := encoder.New(bitClockHz, func(encoder.Level) error { return nil },
+			encoder.WithSyncBytes(0), encoder.WithBufferSize(1))
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// Errors are expected here; a panic is not.
+			_, _ = e.Send(make([]byte, 64))
+		}()
+		go func() {
+			defer wg.Done()
+			_ = e.Close()
+		}()
+		wg.Wait()
+	}
+}
+
+// TestDecoderInfoIsConcurrencySafe guards the promise Info() makes in its own
+// documentation. Info() used to read the decoder state and the bit period
+// without synchronisation while the decoding goroutine was writing them;
+// run this with -race to see the regression.
+func TestDecoderInfoIsConcurrencySafe(t *testing.T) {
+	const events = 2000
+
+	c := make(chan decoder.Event, 64)
+	d, err := decoder.New(c, 0) // no bit clock: clock discovery writes the state
+	if err != nil {
+		t.Fatalf("decoder.New: %v", err)
+	}
+	defer d.Close()
+
+	go func() {
+		for b := range d.Bits() {
+			_ = b
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		now := time.Now()
+		for i := 0; i < events; i++ {
+			edge := decoder.RisingEdge
+			if i%2 == 1 {
+				edge = decoder.FallingEdge
+			}
+			c <- decoder.Event{Time: now.Add(time.Duration(i) * 5 * time.Millisecond), Edge: edge}
+		}
+	}()
+
+	for i := 0; i < events; i++ {
+		_ = d.Info()
+	}
+	<-done
 }

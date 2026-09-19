@@ -25,6 +25,27 @@
 //	d, err := decoder.New(eventCh, 50, decoder.WithManchesterEncoding(decoder.IEEE))
 //	for bit := range d.Bits() { ... }
 //	d.Close() // stops the decoder and waits for clean shutdown
+//
+// # Framing
+//
+// The decoder delivers a raw bit stream and knows nothing about bytes: start
+// and stop bits, sync preambles and byte boundaries are the caller's business.
+//
+// Two properties matter when reading that stream:
+//
+//  1. Bits are decoded from the interval between two edges, so the very first
+//     edge only establishes the reference timestamp and yields no bit. The
+//     first bit of a transmission is therefore never reported.
+//  2. A run of identical bits produces nothing but half-bit intervals, from
+//     which the position of the mid-bit edge cannot be derived. The decoder
+//     settles on the correct phase at the first full-bit interval, which is
+//     the first place where the transmitted bit value changes.
+//
+// Both are covered by the sync bytes the encoder sends ahead of the data
+// (see encoder.WithSyncBytes): the preamble absorbs the lost first bit, and
+// the low start bit of the first data byte provides the full-bit interval
+// that locks the phase. Senders that transmit without a preamble must expect
+// to lose the beginning of every message.
 package decoder
 
 import (
@@ -77,9 +98,19 @@ const (
 	invalidThreshold  = 20  // Max consecutive invalid intervals before resync
 )
 
+// atomicDuration is a time.Duration that is safe for concurrent access.
+type atomicDuration struct {
+	v atomic.Int64
+}
+
+func (d *atomicDuration) Load() time.Duration   { return time.Duration(d.v.Load()) }
+func (d *atomicDuration) Store(v time.Duration) { d.v.Store(int64(v)) }
+
 // Decoder holds all state and channels for decoding Manchester signals
 type Decoder struct {
-	state int // Current state: clock discovery or data decoding
+	// state is the current state: clock discovery or data decoding.
+	// It is atomic because Info() reports it from another goroutine.
+	state atomic.Int32
 
 	clockEventSamples []time.Duration // Samples for clock discovery
 	lastTimestamp     time.Time       // Time of last event
@@ -89,7 +120,9 @@ type Decoder struct {
 	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
 	decodingTable      [2]Bit             // Manchester decoding lookup table: [Level][Bit]
 
-	fullBitTime          time.Duration // Full bit period duration
+	// fullBitTime is the full bit period. It is atomic because Info() derives
+	// the decoding frequency from it while the decoder is running.
+	fullBitTime          atomicDuration
 	halfBitTime          time.Duration // Half-bit period duration
 	fullBitTimeTolerance time.Duration // Full bit period tolerance
 	halfBitTimeTolerance time.Duration // Half-bit period tolerance
@@ -109,13 +142,16 @@ type Decoder struct {
 // New creates a new Decoder instance, initializes channels, and starts the decoding goroutine.
 // If bitClockHz > 0, clock discovery is skipped and the bit periods are calculated directly.
 // Call Close() to stop the decoder and wait for a clean shutdown.
+//
+// The first bit of a transmission is never reported; see the package
+// documentation on framing.
 func New(c <-chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
 	d := &Decoder{
 		eventC:            c,
 		clockEventSamples: make([]time.Duration, 0, clockEventSamples),
-		state:             discoverClock,
 		bufferSize:        1024,
 	}
+	d.state.Store(discoverClock)
 
 	for _, opt := range opts {
 		opt(d)
@@ -132,11 +168,12 @@ func New(c <-chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
 	d.c = make(chan Bit, d.bufferSize)
 	if bitClockHz > 0 {
 		// If a frequency is provided, calculate the expected bit periods and tolerances directly.
-		d.fullBitTime = time.Duration(int64(time.Second) / int64(bitClockHz))
-		d.halfBitTime = d.fullBitTime / 2
-		d.fullBitTimeTolerance = d.fullBitTime * bitTimeTolerance / 100
+		fullBitTime := time.Duration(int64(time.Second) / int64(bitClockHz))
+		d.fullBitTime.Store(fullBitTime)
+		d.halfBitTime = fullBitTime / 2
+		d.fullBitTimeTolerance = fullBitTime * bitTimeTolerance / 100
 		d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
-		d.state = decodeData // Skip clock discovery if frequency is known
+		d.state.Store(decodeData) // Skip clock discovery if frequency is known
 	}
 
 	// Start the decoding process in a separate goroutine.
@@ -201,12 +238,12 @@ func (d *Decoder) Info() string {
 	var state string
 	var frequency float64
 
-	switch s := d.state; s {
+	switch s := d.state.Load(); s {
 	case discoverClock:
 		state = "discovering clock"
 	case decodeData:
 		state = "decoding data"
-		if t := d.fullBitTime; t > 0 {
+		if t := d.fullBitTime.Load(); t > 0 {
 			frequency = 1 / t.Seconds()
 		}
 	default:
@@ -239,7 +276,7 @@ func (d *Decoder) eventHandler(event Event) {
 	delta := event.Time.Sub(d.lastTimestamp)
 	d.lastTimestamp = event.Time
 
-	switch d.state {
+	switch d.state.Load() {
 	case discoverClock:
 		d.clockEventSamples = append(d.clockEventSamples, delta)
 
@@ -253,16 +290,16 @@ func (d *Decoder) eventHandler(event Event) {
 			}
 
 			d.halfBitTime = half
-			d.fullBitTime = full
-			d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
-			d.fullBitTimeTolerance = d.fullBitTime * bitTimeTolerance / 100
+			d.fullBitTime.Store(full)
+			d.halfBitTimeTolerance = half * bitTimeTolerance / 100
+			d.fullBitTimeTolerance = full * bitTimeTolerance / 100
 			d.clockEventSamples = d.clockEventSamples[:0]
 			d.receivedHalfBit = 0
-			d.state = decodeData
+			d.state.Store(decodeData)
 		}
 
 	case decodeData:
-		if withinTolerance(delta, d.fullBitTime, d.fullBitTimeTolerance) {
+		if withinTolerance(delta, d.fullBitTime.Load(), d.fullBitTimeTolerance) {
 			// full bit detected >> its' a 1 or 0 depending on the edge
 			d.receivedHalfBit = 0
 			d.invalidIntervalCount = 0
@@ -303,7 +340,7 @@ func (d *Decoder) eventHandler(event Event) {
 	default:
 		d.receivedHalfBit = 0
 		d.lastTimestamp = time.Time{}
-		d.state = discoverClock
+		d.state.Store(discoverClock)
 	}
 }
 
@@ -377,7 +414,7 @@ func (d *Decoder) sendBit(bit Bit) {
 func (d *Decoder) resynchronize() {
 
 	d.resyncCount.Add(1)
-	d.state = discoverClock
+	d.state.Store(discoverClock)
 	d.clockEventSamples = d.clockEventSamples[:0] // reset the slice without reallocating (keep capacity)
 	d.invalidIntervalCount = 0
 	d.receivedHalfBit = 0

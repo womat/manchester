@@ -86,6 +86,7 @@ type Encoder struct {
 	encodingTable      [2][2]Level        // Manchester encoding lookup table: [bit][half-step]
 	onError            func(err error)    // Optional error handler callback
 
+	closed    bool // guarded by writeMutex: true once Close() shut the buffer down
 	cancel    context.CancelFunc
 	ctx       context.Context
 	wg        sync.WaitGroup // WaitGroup to track the encoder goroutine
@@ -172,14 +173,21 @@ func WithManchesterEncoding(enc ManchesterEncoding) Option {
 
 // Close gracefully shuts down the encoder.
 // It is safe to call Close multiple times.
+//
+// A transmission in progress is aborted, which leaves the line at the level of
+// the half-bit that was driven last. Callers that need a defined idle level
+// must set it themselves after Close returns.
 func (e *Encoder) Close() error {
 	e.closeOnce.Do(func() {
 
 		// Signal stop to prevent new writes
 		e.cancel()
 
-		// Lock to prevent new writes while closing
+		// Lock to prevent new writes while closing. Send() marks the buffer as
+		// closed under the same mutex, so no Send can reach the channel after it
+		// has been closed.
 		e.writeMutex.Lock()
+		e.closed = true
 		// Close buffer to let listener finish draining
 		close(e.buffer)
 		e.writeMutex.Unlock()
@@ -191,37 +199,65 @@ func (e *Encoder) Close() error {
 }
 
 // Wait waits until all buffered txBytes have been transmitted.
+//
+// It must not be called concurrently with Send: a Send that raises the counter
+// from zero while Wait is already blocked is a data race on the WaitGroup.
 func (e *Encoder) Wait() {
 	e.wgBytes.Wait() // block until all bytes fully transmitted
 }
 
 // Send places data into the transmission buffer.
-// It blocks if the buffer is full and returns ErrEncoderStopped if Close() was called.
+//
+// It blocks if the buffer is full and returns ErrEncoderStopped if Close() was
+// called, either before or while waiting for buffer space. Bytes that were
+// already queued when the encoder was stopped are discarded untransmitted.
+//
+// Send must not be called concurrently with Wait.
 func (e *Encoder) Send(data []byte) (int, error) {
 	e.writeMutex.Lock()
 	defer e.writeMutex.Unlock()
 
+	// The buffer is closed under writeMutex, so checking the flag here is
+	// enough to guarantee that the sends below never touch a closed channel.
+	if e.closed {
+		return 0, ErrEncoderStopped
+	}
+
 	// Send sync bytes
 	for i := 0; i < e.syncBytes; i++ {
-		select {
-		case e.buffer <- txByte{b: 0xff, addStartStop: false}:
-			e.wgBytes.Add(1)
-		case <-e.ctx.Done():
+		if !e.queue(txByte{b: 0xff, addStartStop: false}) {
 			return 0, ErrEncoderStopped
 		}
 	}
 
 	// Send data bytes
 	for _, b := range data {
-		select {
-		case e.buffer <- txByte{b: b, addStartStop: true}:
-			e.wgBytes.Add(1)
-		case <-e.ctx.Done():
+		if !e.queue(txByte{b: b, addStartStop: true}) {
 			return 0, ErrEncoderStopped
 		}
 	}
 
 	return len(data), nil
+}
+
+// queue hands a single byte to the transmitting goroutine, blocking while the
+// buffer is full. It reports false if the encoder was stopped meanwhile.
+//
+// The caller must hold writeMutex.
+//
+// wgBytes is incremented before the byte becomes visible to the consumer:
+// the other way round the consumer could call Done() before Add(), which
+// drives the counter negative.
+func (e *Encoder) queue(tx txByte) bool {
+	e.wgBytes.Add(1)
+
+	select {
+	case e.buffer <- tx:
+		return true
+	case <-e.ctx.Done():
+		e.wgBytes.Done() // the byte never made it into the buffer
+		return false
+	}
 }
 
 // encodeByte encodes a single byte and transmits it with optional start/stop bits.
