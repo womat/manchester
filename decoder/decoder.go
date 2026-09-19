@@ -405,13 +405,18 @@ func (d *Decoder) listenForEvents(ctx context.Context) {
 }
 
 // decodingTable returns the Manchester decoding lookup table for the given encoding type.
-// maps Edge events to decoded Bits
+// maps the mid-bit Edge event to the decoded Bit.
+//
+// The table must be the inverse of the encoder's encodingTable:
+//   - IEEE 802.3 encodes a logical 1 as a low-to-high transition at mid-bit,
+//     so a rising mid-bit edge decodes to High.
+//   - G.E. Thomas uses the opposite convention.
 func decodingTable(code ManchesterEncoding) [2]Bit {
 	switch code {
 	case Thomas:
-		return [2]Bit{FallingEdge: Low, RisingEdge: High}
+		return [2]Bit{FallingEdge: High, RisingEdge: Low}
 		// default IEEE
 	default:
-		return [2]Bit{FallingEdge: High, RisingEdge: Low}
+		return [2]Bit{FallingEdge: Low, RisingEdge: High}
 	}
 }

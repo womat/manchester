@@ -79,7 +79,7 @@ type Encoder struct {
 	bitOrder           BitOrder           // Order of bits: LSBFirst or MSBFirst
 	syncBytes          int                // Number of 0xFF bytes for synchronization before actual data
 	buffer             chan txByte        // Buffered channel for outgoing txBytes
-	halfBitTicker      *time.Ticker       // Ticker for Manchester half-bit transitions
+	halfBitPeriod      time.Duration      // Duration of one Manchester half-bit
 	setValue           SetValue           // Function to set the GPIO output level
 	bufferSize         int                // Size of the internal buffer channel
 	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
@@ -113,7 +113,7 @@ func New(bitClockHz int, setValue SetValue, opts ...Option) *Encoder {
 	}
 
 	bitPeriod := time.Second / time.Duration(bitClockHz)
-	e.halfBitTicker = time.NewTicker(bitPeriod / 2)
+	e.halfBitPeriod = bitPeriod / 2
 	e.encodingTable = encodingTable(e.manchesterEncoding)
 	e.buffer = make(chan txByte, e.bufferSize)
 
@@ -186,9 +186,6 @@ func (e *Encoder) Close() error {
 
 		// Wait for background goroutine to finish
 		e.wg.Wait()
-
-		// Stop ticker after goroutine finished
-		e.halfBitTicker.Stop()
 	})
 	return nil
 }
@@ -262,11 +259,33 @@ func (e *Encoder) encodeBit(bit byte) {
 	for _, v := range e.encodingTable[bit] {
 		e.setBit(v)
 
-		select {
-		case <-e.ctx.Done():
+		if !e.waitHalfBit() {
 			return
-		case <-e.halfBitTicker.C:
 		}
+	}
+}
+
+// waitHalfBit blocks for one half-bit period, starting from the moment the
+// level was driven.
+//
+// The period is deliberately measured from now instead of from a running
+// schedule: the decoder validates every interval on its own against the
+// nominal bit time, so a half-bit that runs slightly long is harmless, while
+// a shortened one is decoded as an invalid bit. Catching up on a late half-bit
+// by shortening the next one would therefore corrupt the signal rather than
+// repair it, and a free-running ticker does exactly that - after an idle
+// period its buffered tick truncates the first half-bits of the next message.
+//
+// It reports false if the encoder was stopped while waiting.
+func (e *Encoder) waitHalfBit() bool {
+	timer := time.NewTimer(e.halfBitPeriod)
+	defer timer.Stop()
+
+	select {
+	case <-e.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
