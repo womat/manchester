@@ -46,10 +46,9 @@ func halfBits(t *testing.T, enc ManchesterEncoding, bits ...byte) []Level {
 
 	var out []Level
 	for _, b := range bits {
-		switch {
-		case (b == 1) == (enc == IEEE):
+		if (b == 1) == (enc == IEEE) {
 			out = append(out, Low, High)
-		default:
+		} else {
 			out = append(out, High, Low)
 		}
 	}
