@@ -54,8 +54,20 @@ enc.Wait() // block until everything has been transmitted
 
 `Send` frames every data byte with a low start bit and a high stop bit, and
 prefixes the message with `WithSyncBytes(n)` sync bytes (`0xff`, sent without
-framing). Defaults: 50 … whatever you pass as bit clock, `LSBFirst`, two sync
-bytes, a buffer of 1024 bytes, IEEE.
+framing).
+
+| Encoder option | Default | Comment |
+|---|---|---|
+| `WithBitOrder(LSBFirst\|MSBFirst)` | `LSBFirst` | order the bits of each byte go on the line |
+| `WithSyncBytes(n)` | `2` | `0xff` bytes sent unframed ahead of the data; negative values ignored |
+| `WithoutSync()` | — | shorthand for `WithSyncBytes(0)`; read [the caveat](#what-the-decoder-does-not-do) first |
+| `WithBufferSize(n)` | `1024` | bytes the internal channel holds before `Send` blocks; values ≤ 0 ignored |
+| `WithManchesterEncoding(IEEE\|Thomas)` | `IEEE` | must match the decoder |
+| `WithErrorHandler(func(error))` | none | **without it, a failing `SetValue` is silently ignored** — the transmission continues with a corrupt line |
+
+`WithErrorHandler` is the one option worth setting in production: the encoder
+transmits from a background goroutine, so an error from the `SetValue` callback
+has nowhere to be returned to. Unhandled, it disappears.
 
 The encoder transmits from a background goroutine. `Send` blocks while the
 buffer is full and returns `ErrEncoderStopped` once `Close` was called; `Wait`
@@ -76,6 +88,12 @@ for bit := range dec.Bits() {
 }
 ```
 
+| Decoder option | Default | Comment |
+|---|---|---|
+| `WithManchesterEncoding(IEEE\|Thomas)` | `IEEE` | must match the encoder |
+| `WithBufferSize(n)` | `1024` | bits the `Bits()` channel holds before bits are dropped and counted |
+| `WithLogger(*slog.Logger)` | discard | per-interval debug output; expensive at speed, meant for bringing a link up |
+
 The bit clock argument decides how the timing is established:
 
 - **greater than zero** — the bit periods are computed from it directly.
@@ -89,8 +107,9 @@ The bit clock argument decides how the timing is established:
 An interval that matches neither a half nor a full bit period (±25 %) is
 reported as `Invalid`. After more than 20 consecutive invalid intervals the
 decoder discards its timing and returns to clock discovery. `Info()` reports the
-current state, the recovered frequency, and the counters for dropped bits and
-resynchronisations; it is safe to call from another goroutine.
+current state, the recovered frequency, the buffer overflow count (bits dropped
+because the consumer did not keep up) and the resync count; it is safe to call
+from another goroutine.
 
 ## What the decoder does not do
 
@@ -143,6 +162,28 @@ go test ./manchester/...
 go test -race ./manchester/...
 go test ./manchester/decoder/ -run TestCalcBitPeriods -v
 ```
+
+Coverage is 89.3 % of statements in `encoder` and 80.0 % in `decoder`. The
+roundtrip test in this directory reports no statements of its own — it is pure
+integration.
+
+## Not addressed
+
+Known and deliberately left alone:
+
+- **No byte reassembly on the receiving side.** The encoder frames bytes with a
+  start and a stop bit, the decoder does not unframe them —
+  `demo/manchester_listener` carries that code, and every consumer repeats it.
+- **No integrity check.** No CRC, no checksum, no length field. A corrupted bit
+  is delivered as a bit, and only `Invalid` marks a *timing* violation.
+- **No idle level.** `Close` leaves the line wherever the last half-bit put it,
+  see [Timing](#timing).
+- **Dropped bits are counted, not reported.** A full `Bits()` channel loses bits
+  silently; `Info()` is the only way to notice.
+- **The encoder has no logger**, by design — it reports through
+  `WithErrorHandler` instead, and only for `SetValue` failures.
+- **Clock discovery needs a plain signal.** 500 intervals, and an alternating
+  pattern defeats it (see above). Pass a known bit clock whenever there is one.
 
 Full API: `go doc github.com/womat/golib/manchester/encoder` and
 `.../manchester/decoder`.

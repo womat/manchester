@@ -4,27 +4,61 @@
 // of events and continuous data streams.
 //
 // The decoding process is divided into two main phases:
-//  1. **Clock Discovery**: The package calculates the bit timing (bit period and half-bit period)
+//  1. Clock discovery: The package calculates the bit timing (bit period and half-bit period)
 //     by analyzing a series of event samples, ensuring that data decoding starts with the correct timing.
-//  2. **Data Decoding**: Once clock synchronization is achieved, the decoder interprets incoming
+//  2. Data decoding: Once clock synchronization is achieved, the decoder interprets incoming
 //     event edges (rising and falling) as bits (High or Low) according to the Manchester encoding scheme.
 //     It also handles timing tolerances to account for signal variations, ensuring robust decoding.
 //
-// Key Features:
-// - Asynchronous event handling using goroutines to keep the main process responsive.
-// - Clock synchronization phase to determine the bit timing based on incoming event samples.
-// - Robust bit decoding with tolerance handling to account for signal noise and timing deviations.
-// - Graceful shutdown mechanism to properly close channels and wait for background tasks to finish.
+// Key features:
+//   - Asynchronous event handling using goroutines to keep the main process responsive.
+//   - Clock synchronization phase to determine the bit timing based on incoming event samples.
+//   - Robust bit decoding with tolerance handling to account for signal noise and timing
+//     deviations.
+//   - Graceful shutdown mechanism to properly close channels and wait for background tasks
+//     to finish.
 //
-// Channels:
-//   - Bits(): Returns a read-only channel on which decoded bits (High/Low/Invalid) are delivered.
-//   - eventC: Receives GPIO events (rising and falling edges).
+// The decoder reads rising and falling edges from the channel passed to New and
+// delivers decoded bits (High/Low/Invalid) on the channel returned by Bits().
 //
-// Lifecycle:
+// # Example usage
 //
-//	d, err := decoder.New(eventCh, 50, decoder.WithManchesterEncoding(decoder.IEEE))
-//	for bit := range d.Bits() { ... }
-//	d.Close() // stops the decoder and waits for clean shutdown
+//	func main() {
+//	    // The decoder consumes its own Event type, so a transport that
+//	    // reports edges differently needs a small translation step. With
+//	    // gpio that is a goroutine feeding decoder.Event values:
+//	    events := make(chan decoder.Event, 1024)
+//	    go func() {
+//	        defer close(events)
+//	        for evt := range gpioEvents {
+//	            var edge decoder.Edge
+//	            switch evt.Edge {
+//	            case gpio.RisingEdge:
+//	                edge = decoder.RisingEdge
+//	            case gpio.FallingEdge:
+//	                edge = decoder.FallingEdge
+//	            default:
+//	                continue
+//	            }
+//	            events <- decoder.Event{Time: evt.Time, Edge: edge}
+//	        }
+//	    }()
+//
+//	    dec, err := decoder.New(events, 50,
+//	        decoder.WithManchesterEncoding(decoder.IEEE),
+//	    )
+//	    if err != nil {
+//	        log.Fatal(err)
+//	    }
+//	    defer dec.Close() // stops the decoder and waits for clean shutdown
+//
+//	    log.Println(dec.Info())
+//
+//	    for bit := range dec.Bits() {
+//	        // bit is decoder.High, decoder.Low or decoder.Invalid
+//	        _ = bit
+//	    }
+//	}
 //
 // # Framing
 //

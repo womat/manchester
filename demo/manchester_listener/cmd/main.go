@@ -1,5 +1,18 @@
-// This program reads Manchester-encoded signals from the GPIO pin and outputs the decoded bytes.
-// The watcher runs until interrupted (e.g., via Ctrl+C).
+// Command manchester_listener reads Manchester-encoded signals from a GPIO pin
+// and prints the decoded bytes.
+//
+// It shows the glue the library deliberately does not provide: one goroutine
+// translates gpio.Event values into decoder.Event values, a second reassembles
+// the decoder's raw bit stream into bytes by looking for the start and stop
+// bits the encoder frames each byte with.
+//
+// Flags select the GPIO line, the bit clock in Hz and the encoding convention
+// (IEEE 802.3 by default, Thomas with -thomas); they must match the sender.
+// Use demo/manchester_sender on the transmitting end.
+//
+// It runs until interrupted (e.g., via Ctrl+C).
+//
+//	manchester_listener -gpioline 21 -bitClock 50
 package main
 
 import (

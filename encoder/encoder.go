@@ -3,7 +3,7 @@
 // non-blocking writes, and can be used with any GPIO implementation
 // that provides a SetValue(Level) error function.
 //
-// Example usage:
+// # Example usage
 //
 //	func main() {
 //	    pin, err := rpi.NewPin(17, rpi.WithMode(gpio.Output))
@@ -31,7 +31,6 @@
 //	    }
 //	    enc.Wait()
 //	}
-
 package encoder
 
 import (

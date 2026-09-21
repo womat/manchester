@@ -1,11 +1,17 @@
-// Command manchester-sender sends Manchester-encoded data over a GPIO pin.
+// Command manchester_sender sends one Manchester-encoded message over a GPIO
+// pin and exits.
 //
-// It allows selecting a GPIO pin, configuring rising and/or falling edge detection,
-// and optionally setting a debounce time in milliseconds. The program initializes
-// the pin as input with an internal pull-up resistor and logs each detected edge
-// event with a precise timestamp.
+// The message is the single positional argument. Flags select the GPIO line,
+// the bit clock in Hz, the bit order (LSB first by default), the number of
+// 0xff sync bytes sent ahead of the data, and the encoding convention
+// (IEEE 802.3 by default, Thomas with -thomas). The pin is configured as an
+// output; a transmission error is reported through the encoder's error
+// handler, since the encoder transmits from a background goroutine.
 //
-// The watcher runs until interrupted (e.g., via Ctrl+C).
+// The program blocks in enc.Wait() until the message has been transmitted, so
+// it terminates on its own. Use demo/manchester_listener on the receiving end.
+//
+//	manchester_sender -gpioline 21 -bitClock 50 "Hello World"
 package main
 
 import (
