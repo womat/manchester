@@ -288,7 +288,7 @@ func (e *Encoder) encodeByte(b byte, addStartStop bool) {
 
 	switch e.bitOrder {
 	case LSBFirst: //  Bit 0 to Bit 7
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			e.encodeBit((b >> i) & 1)
 		}
 	case MSBFirst: //  Bit 7 to Bit 0

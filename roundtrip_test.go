@@ -317,7 +317,7 @@ func TestEncoderKeepsHalfBitPeriod(t *testing.T) {
 // panics, so Send() panicked roughly every other call instead of returning
 // ErrEncoderStopped as documented.
 func TestSendAfterCloseReturnsError(t *testing.T) {
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		e, err := encoder.New(bitClockHz, func(encoder.Level) error { return nil })
 		if err != nil {
 			t.Fatalf("encoder.New: %v", err)
@@ -336,7 +336,7 @@ func TestSendAfterCloseReturnsError(t *testing.T) {
 // TestConcurrentSendAndClose covers the same defect from the other side:
 // a Send that is already running while Close shuts the encoder down.
 func TestConcurrentSendAndClose(t *testing.T) {
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		e, err := encoder.New(bitClockHz, func(encoder.Level) error { return nil },
 			encoder.WithSyncBytes(0), encoder.WithBufferSize(1))
 		if err != nil {
@@ -382,7 +382,7 @@ func TestDecoderInfoIsConcurrencySafe(t *testing.T) {
 	go func() {
 		defer close(done)
 		now := time.Now()
-		for i := 0; i < events; i++ {
+		for i := range events {
 			edge := decoder.RisingEdge
 			if i%2 == 1 {
 				edge = decoder.FallingEdge
@@ -391,7 +391,7 @@ func TestDecoderInfoIsConcurrencySafe(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < events; i++ {
+	for range events {
 		_ = d.Info()
 	}
 	<-done

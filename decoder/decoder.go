@@ -87,7 +87,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -405,7 +405,7 @@ func calcBitPeriods(samples []time.Duration) (time.Duration, time.Duration) {
 	}
 
 	// Sort the samples to help identify the half-bit period (the first entry should be half-bit)
-	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	slices.Sort(samples)
 
 	var halfBitPeriodMedian time.Duration
 	var fullBitPeriodMedian time.Duration

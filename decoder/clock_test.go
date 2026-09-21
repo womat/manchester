@@ -49,10 +49,10 @@ func samples(t *testing.T, halfCount int, half time.Duration, fullCount int, ful
 	}
 
 	out := make([]time.Duration, 0, halfCount+fullCount)
-	for i := 0; i < halfCount; i++ {
+	for range halfCount {
 		out = append(out, jitter(half))
 	}
-	for i := 0; i < fullCount; i++ {
+	for range fullCount {
 		out = append(out, jitter(full))
 	}
 	r.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })

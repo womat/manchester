@@ -189,7 +189,7 @@ func TestResynchroniseNeedsAWholeRun(t *testing.T) {
 
 	// One bad interval, then a good one, repeated well past the threshold.
 	dr := newDriver(d)
-	for i := 0; i < invalidThreshold*2; i++ {
+	for range invalidThreshold * 2 {
 		dr.intervals(testInvalid, testFullBit)
 	}
 
@@ -207,7 +207,7 @@ func TestSendBitCountsBufferOverflows(t *testing.T) {
 	d := newTestDecoder(t, WithBufferSize(bufferSize))
 
 	const sent = 5
-	for i := 0; i < sent; i++ {
+	for range sent {
 		d.sendBit(High)
 	}
 

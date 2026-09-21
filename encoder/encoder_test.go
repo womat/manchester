@@ -270,7 +270,7 @@ func TestSetBitWithoutErrorHandler(t *testing.T) {
 func TestCloseIsIdempotent(t *testing.T) {
 	e, _ := newRecordingEncoder(t)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := e.Close(); err != nil {
 			t.Fatalf("Close call %d: %v", i+1, err)
 		}
