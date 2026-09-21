@@ -1,6 +1,6 @@
 module github.com/womat/golib/demo/manchester_listener
 
-go 1.26
+go 1.27.0
 
 require github.com/womat/golib v1.0.4
 
