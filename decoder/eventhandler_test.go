@@ -137,6 +137,51 @@ func TestEventHandlerInvalidInterval(t *testing.T) {
 	}
 }
 
+// TestEventHandlerRejectsAnIntervalAcrossLostEdges covers an interval whose
+// length fits a bit period by chance although edges were lost inside it: it
+// must be reported as Invalid, and the timing reference must move on.
+func TestEventHandlerRejectsAnIntervalAcrossLostEdges(t *testing.T) {
+	d := newTestDecoder(t)
+	dr := newDriver(d)
+
+	dr.now = dr.now.Add(testFullBit)
+	d.eventHandler(Event{Time: dr.now, Edge: FallingEdge, Missed: 2})
+
+	if got := bits(d); len(got) != 1 || got[0] != Invalid {
+		t.Errorf("an interval across lost edges produced %v, want [%v]", got, Invalid)
+	}
+	if !d.lastTimestamp.Equal(dr.now) {
+		t.Error("the event after a gap did not become the new timing reference")
+	}
+
+	dr.edge = FallingEdge
+	dr.intervals(testFullBit)
+	if got := bits(d); len(got) != 1 || got[0] == Invalid {
+		t.Errorf("the next regular interval produced %v, want one valid bit", got)
+	}
+}
+
+// TestClockDiscoverySkipsIntervalsAcrossLostEdges makes sure an interval that
+// spans lost edges does not enter the samples the bit clock is derived from.
+func TestClockDiscoverySkipsIntervalsAcrossLostEdges(t *testing.T) {
+	d := newTestDecoder(t)
+	d.resynchronize()
+
+	dr := newDriver(d)
+	dr.now = dr.now.Add(testFullBit)
+	d.eventHandler(Event{Time: dr.now, Edge: FallingEdge, Missed: 1})
+
+	if len(d.clockEventSamples) != 0 {
+		t.Errorf("clock discovery sampled %v across lost edges, want nothing", d.clockEventSamples)
+	}
+
+	dr.edge = FallingEdge
+	dr.intervals(testHalfBit)
+	if len(d.clockEventSamples) != 1 || d.clockEventSamples[0] != testHalfBit {
+		t.Errorf("clock samples are %v, want [%v] measured from the event after the gap", d.clockEventSamples, testHalfBit)
+	}
+}
+
 // TestEventHandlerIgnoresUnknownEdges makes sure a malformed event neither
 // produces a bit nor disturbs the timing reference.
 func TestEventHandlerIgnoresUnknownEdges(t *testing.T) {

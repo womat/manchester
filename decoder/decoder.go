@@ -40,7 +40,7 @@
 //	            default:
 //	                continue
 //	            }
-//	            events <- decoder.Event{Time: evt.Time, Edge: edge}
+//	            events <- decoder.Event{Time: evt.Time, Edge: edge, Missed: evt.Missed}
 //	        }
 //	    }()
 //
@@ -100,9 +100,16 @@ type Edge uint8
 type Bit int
 
 // Event represents a state change event (e.g., RisingEdge or FallingEdge).
+//
+// Missed is the number of edges lost immediately before this one - the
+// counterpart of gpio.Event.Missed, plus whatever the caller itself had to
+// drop. The decoder does not use the interval to an event with Missed > 0:
+// during clock discovery it is not sampled, while decoding it counts as an
+// invalid interval.
 type Event struct {
-	Time time.Time // Time is the exact time when the edge event was detected.
-	Edge Edge      // Edge indicates the type of state change (RisingEdge or FallingEdge).
+	Time   time.Time // Time is the exact time when the edge event was detected.
+	Edge   Edge      // Edge indicates the type of state change (RisingEdge or FallingEdge).
+	Missed uint64    // Missed is the number of edges lost immediately before this one.
 }
 
 // ManchesterEncoding represents the type of Manchester encoding to use.
@@ -330,6 +337,9 @@ func (d *Decoder) eventHandler(event Event) {
 
 	switch d.state.Load() {
 	case discoverClock:
+		if event.Missed > 0 {
+			return // the interval spans lost edges and is no bit period
+		}
 		d.clockEventSamples = append(d.clockEventSamples, delta)
 
 		// Once enough samples are gathered, calculate the bit periods.
@@ -351,7 +361,9 @@ func (d *Decoder) eventHandler(event Event) {
 		}
 
 	case decodeData:
-		if withinTolerance(delta, d.fullBitTime.Load(), d.fullBitTimeTolerance) {
+		// An interval that spans lost edges matches nothing and is reported
+		// as invalid below, however well its length happens to fit.
+		if event.Missed == 0 && withinTolerance(delta, d.fullBitTime.Load(), d.fullBitTimeTolerance) {
 			// full bit detected >> its' a 1 or 0 depending on the edge
 			d.receivedHalfBit = 0
 			d.invalidIntervalCount = 0
@@ -362,7 +374,7 @@ func (d *Decoder) eventHandler(event Event) {
 			return
 		}
 
-		if withinTolerance(delta, d.halfBitTime, d.halfBitTimeTolerance) {
+		if event.Missed == 0 && withinTolerance(delta, d.halfBitTime, d.halfBitTimeTolerance) {
 			d.invalidIntervalCount = 0
 			if d.receivedHalfBit == 0 {
 				// first half bit detected >> wait for next half bit
@@ -383,7 +395,7 @@ func (d *Decoder) eventHandler(event Event) {
 		d.invalidIntervalCount++
 		d.sendBit(Invalid)
 		if d.logger != nil {
-			d.logger.Debug("invalid interval detected, sending invalid bit", "delta", delta.Microseconds())
+			d.logger.Debug("invalid interval detected, sending invalid bit", "delta", delta.Microseconds(), "missed", event.Missed)
 		}
 		if d.invalidIntervalCount > invalidThreshold {
 			d.resynchronize()

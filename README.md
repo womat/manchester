@@ -105,7 +105,11 @@ The bit clock argument decides how the timing is established:
 - **negative** — rejected, as is a nil event channel.
 
 An interval that matches neither a half nor a full bit period (±25 %) is
-reported as `Invalid`. After more than 20 consecutive invalid intervals the
+reported as `Invalid`. So is the interval to an event with `Missed > 0`, the
+number of edges lost immediately before it — whatever its length, it spans
+more than one edge; during clock discovery such an interval is not sampled.
+The glue sets `Missed` from `gpio.Event.Missed` and adds the edges it had to
+drop itself, see `demo/manchester_listener`. After more than 20 consecutive invalid intervals the
 decoder discards its timing and returns to clock discovery. `Info()` reports the
 current state, the recovered frequency, the buffer overflow count (bits dropped
 because the consumer did not keep up) and the resync count; it is safe to call
@@ -163,7 +167,7 @@ go test -race ./manchester/...
 go test ./manchester/decoder/ -run TestCalcBitPeriods -v
 ```
 
-Coverage is 89.3 % of statements in `encoder` and 80.0 % in `decoder`. The
+Coverage is 89.3 % of statements in `encoder` and 83.1 % in `decoder`. The
 roundtrip test in this directory reports no statements of its own — it is pure
 integration.
 

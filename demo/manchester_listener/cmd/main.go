@@ -81,6 +81,11 @@ func main() {
 
 	// --- Goroutine 1: GPIO → Decoder ---
 	go func() {
+		// Edges dropped here because the decoder was full. They are handed on
+		// with the next event, so the decoder does not take the interval across
+		// them for a bit period.
+		var missed uint64
+
 		for {
 			select {
 			case evt, ok := <-gpioEvents:
@@ -97,8 +102,10 @@ func main() {
 					continue
 				}
 				select {
-				case decoderEvents <- decoder.Event{Time: evt.Time, Edge: edge}:
-				default: // Wenn Decoder voll, verwerfen
+				case decoderEvents <- decoder.Event{Time: evt.Time, Edge: edge, Missed: evt.Missed + missed}:
+					missed = 0
+				default: // decoder full: drop the edge, and report it on the next one
+					missed += evt.Missed + 1
 				}
 			case <-ctx.Done():
 				return
