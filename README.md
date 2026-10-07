@@ -77,7 +77,7 @@ with `Send`.
 ## Receiving
 
 ```go
-dec, err := decoder.New(events, 50, decoder.WithManchesterEncoding(decoder.IEEE))
+dec, err := decoder.New(events, 0, decoder.WithManchesterEncoding(decoder.IEEE)) // 0: any bit rate
 if err != nil {
     log.Fatal(err)
 }
@@ -96,48 +96,71 @@ for bit := range dec.Bits() {
 
 The bit clock argument decides how the timing is established:
 
-- **greater than zero** — the bit periods are computed from it directly.
-  This is the normal case; the demos pass `-bitClock 50`.
-- **zero** — clock discovery: the decoder measures incoming edge intervals and
-  derives the bit period from their median. It needs 500 intervals before the
-  first bit appears, roughly 7 seconds of continuous signal at 50 Hz, and
-  everything received until then is discarded.
+- **zero** — clock recovery, the decoder reads any bit rate. This is what a
+  receiver of a third-party sender wants, and what the demos default to.
+- **greater than zero** — the bit periods are computed from it directly, and
+  must match the sender within the tolerance.
 - **negative** — rejected, as is a nil event channel.
+
+Clock recovery works on the edges alone, in three steps:
+
+1. **Lock.** The decoder buffers edges until the latest 16 intervals all fit
+   one half-bit period T or twice that, with both lengths present. Manchester
+   knows no other interval, and a window with only one length is ambiguous: a
+   run of identical bits gives only T, alternating bits (`0x55`, `0xaa`, …)
+   only 2T, which looks like T of a clock half as fast. The decoder keeps
+   waiting there instead of guessing.
+2. **Phase.** A full-bit interval always runs from one mid-bit edge to the
+   next, and so does every second edge before it. From the first full-bit
+   interval the decoder decodes the buffered edges backwards, so a preamble of
+   identical bits — the encoder's sync bytes, a DL-Bus SYNC — arrives in full,
+   first bit included. Bits are delayed only until then; afterwards they
+   arrive edge by edge.
+3. **Tracking.** Every valid interval moves the clock by a sixteenth of its
+   deviation, so the decoder follows a sender whose clock is off the nominal
+   rate or drifts. The tests cover ±5 % offset, 10 % drift over a frame and
+   ±5 % jitter on every half-bit.
 
 An interval that matches neither a half nor a full bit period (±25 %) is
 reported as `Invalid`. So is the interval to an event with `Missed > 0`, the
 number of edges lost immediately before it — whatever its length, it spans
-more than one edge; during clock discovery such an interval is not sampled.
-The glue sets `Missed` from `gpio.Event.Missed` and adds the edges it had to
-drop itself, see `demo/manchester_listener`. After more than 20 consecutive invalid intervals the
-decoder discards its timing and returns to clock discovery. `Info()` reports the
-current state, the recovered frequency, the buffer overflow count (bits dropped
-because the consumer did not keep up) and the resync count; it is safe to call
-from another goroutine.
+more than one edge, and it never enters the clock estimate. The glue sets
+`Missed` from `gpio.Event.Missed` and adds the edges it had to drop itself, see
+`demo/manchester_listener`. With a recovered clock an invalid interval — a
+pause between two transmissions, too — also resets the phase, which is settled
+again at the next full-bit interval; the clock is kept. After more than 20
+consecutive invalid intervals the decoder discards its timing and recovers
+the clock anew, also when it was configured. `Info()` reports the current
+state, the current frequency, the buffer overflow count (bits dropped because
+the consumer did not keep up) and the resync count; it is safe to call from
+another goroutine.
 
 ## What the decoder does not do
 
-It delivers a raw bit stream. Start and stop bits, sync preambles and byte
-boundaries are the caller's business — `demo/manchester_listener` shows the
-reassembly. Two properties matter when reading that stream:
+It delivers a raw bit stream. Start and stop bits, sync preambles, byte
+boundaries and the polarity of the line are the caller's business —
+`demo/manchester_listener` shows the reassembly. Line drivers such as an
+optocoupler often invert the signal, which turns IEEE into Thomas and the
+other way round; a caller that knows its preamble can detect that from the
+decoded bits.
+
+With a **configured** bit clock the decoder does not buffer, and two
+properties matter when reading the stream:
 
 1. **The first bit of a transmission is never reported.** A bit is decoded from
    the interval between two edges, so the first edge only establishes the
    reference timestamp.
-2. **The bit phase only locks at the first full-bit interval.** A run of
+2. **The bit phase is guessed until the first full-bit interval.** A run of
    identical bits produces nothing but half-bit intervals, and from those the
-   position of the mid-bit edge cannot be derived.
+   position of the mid-bit edge cannot be derived; a wrong guess is corrected
+   there.
 
 The sync preamble covers both: it absorbs the lost first bit, and the low start
-bit of the first data byte provides the full-bit interval that locks the phase.
-Senders that use `WithoutSync()` must expect to lose the beginning of every
-message.
-
-Clock discovery has a related limitation: an alternating bit pattern (`0x55`,
-`0xaa`, …) has a transition in every bit and none on the bit boundaries, so
-every interval is a full-bit one. With no short intervals to compare against the
-discovery locks on to twice the real period. A preamble of `0xff` bytes avoids
-this, which is another reason to keep it.
+bit of the first data byte provides the full-bit interval that settles the
+phase. Senders that use `WithoutSync()` must expect to lose the beginning of
+every message. With a **recovered** clock neither applies — the buffered edges
+are decoded backwards once the phase is known — but the first bits arrive only
+after the lock, see above.
 
 ## Timing
 
@@ -180,19 +203,20 @@ defined idle state must set it themselves afterwards.
 ## Tests
 
 `roundtrip_test.go` in this directory wires encoder and decoder into a virtual
-line and covers both conventions, both bit orders, the polarity of the encoding
-and the encoder's half-bit timing. It lives here rather than in either package
-because it must import both. The packages themselves carry unit tests for their
-internals — framing and bit order in `encoder`, clock discovery and event
-handling in `decoder`.
+line and covers both conventions, both bit orders, a configured and a recovered
+clock, the polarity of the encoding and the encoder's half-bit timing. It lives
+here rather than in either package because it must import both. The packages
+themselves carry unit tests for their internals — framing, bit order and timing
+in `encoder`, clock recovery (`recovery_test.go`, with a synthetic sender whose
+clock is off, drifts and jitters) and event handling in `decoder`.
 
 ```sh
 go test ./manchester/...
 go test -race ./manchester/...
-go test ./manchester/decoder/ -run TestCalcBitPeriods -v
+go test ./manchester/decoder/ -run TestRecovery -v
 ```
 
-Coverage is 89.3 % of statements in `encoder` and 83.1 % in `decoder`. The
+Coverage is 89.9 % of statements in `encoder` and 91.5 % in `decoder`. The
 roundtrip test in this directory reports no statements of its own — it is pure
 integration.
 
@@ -211,8 +235,13 @@ Known and deliberately left alone:
   silently; `Info()` is the only way to notice.
 - **The encoder has no logger**, by design — it reports through
   `WithErrorHandler` instead, and only for `SetValue` failures.
-- **Clock discovery needs a plain signal.** 500 intervals, and an alternating
-  pattern defeats it (see above). Pass a known bit clock whenever there is one.
+- **Clock recovery needs both interval lengths.** A stream of only identical
+  bits, or of only alternating bits, never locks, and bits buffered beyond 512
+  edges are dropped from the front. Every real frame format mixes both;
+  otherwise pass the bit clock.
+- **No polarity detection.** The decoder cannot know which bits a sender meant
+  — an inverted line decodes as the complement. Detecting it needs knowledge of
+  the frame format, so it is left to the caller.
 
 Full API: `go doc github.com/womat/golib/manchester/encoder` and
 `.../manchester/decoder`.

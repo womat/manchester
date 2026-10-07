@@ -6,13 +6,17 @@
 // the decoder's raw bit stream into bytes by looking for the start and stop
 // bits the encoder frames each byte with.
 //
-// Flags select the GPIO line, the bit clock in Hz and the encoding convention
-// (IEEE 802.3 by default, Thomas with -thomas); they must match the sender.
+// Flags select the GPIO line, the bit clock in Hz (0, the default, recovers it
+// from the signal) and the encoding convention (IEEE 802.3 by default, Thomas
+// with -thomas), which must match the sender. A line driver that inverts the
+// signal, such as an optocoupler, turns one convention into the other: an IEEE
+// sender behind an optocoupler is read with -thomas.
 // Use demo/manchester_sender on the transmitting end.
 //
 // It runs until interrupted (e.g., via Ctrl+C).
 //
-//	manchester_listener -gpioline 21 -bitClock 50
+//	manchester_listener -gpioline 21
+//	manchester_listener -gpioline 21 -bitClock 50 -thomas
 package main
 
 import (
@@ -32,7 +36,7 @@ import (
 
 func main() {
 	gpioLine := flag.Int("gpioline", 20, "GPIO pin number")
-	bitClock := flag.Int("bitClock", 50, "bit clock in Hz")
+	bitClock := flag.Int("bitClock", 0, "bit clock in Hz, 0 recovers it from the signal")
 	thomas := flag.Bool("thomas", false, "use 'Differential Manchester/Thomas' encoding instead of IEEE 802.3")
 
 	flag.Parse()

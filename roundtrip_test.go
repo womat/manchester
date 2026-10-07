@@ -101,13 +101,20 @@ func transmit(t *testing.T, data []byte, enc encoder.ManchesterEncoding, order e
 // receive feeds an edge stream into a decoder and collects the decoded bits.
 func receive(t *testing.T, events []decoder.Event, enc decoder.ManchesterEncoding) []decoder.Bit {
 	t.Helper()
+	return receiveAt(t, events, enc, bitClockHz)
+}
+
+// receiveAt is receive with a given decoder bit clock; 0 recovers the clock
+// from the edges.
+func receiveAt(t *testing.T, events []decoder.Event, enc decoder.ManchesterEncoding, clockHz int) []decoder.Bit {
+	t.Helper()
 
 	c := make(chan decoder.Event, len(events)+1)
 	for _, e := range events {
 		c <- e
 	}
 
-	d, err := decoder.New(c, bitClockHz, decoder.WithManchesterEncoding(enc))
+	d, err := decoder.New(c, clockHz, decoder.WithManchesterEncoding(enc))
 	if err != nil {
 		t.Fatalf("decoder.New: %v", err)
 	}
@@ -184,31 +191,42 @@ func assemble(bits []decoder.Bit, order encoder.BitOrder) []byte {
 // the decoder used to return the bitwise complement of the transmitted data,
 // which made the start bit unrecognisable and the payload unrecoverable.
 func TestRoundTrip(t *testing.T) {
-	tests := []struct {
-		name  string
-		enc   encoder.ManchesterEncoding
-		dec   decoder.ManchesterEncoding
-		order encoder.BitOrder
-		data  []byte
+	for _, clock := range []struct {
+		name string
+		hz   int
 	}{
-		{"IEEE/LSB", encoder.IEEE, decoder.IEEE, encoder.LSBFirst, []byte("Hello World")},
-		{"IEEE/MSB", encoder.IEEE, decoder.IEEE, encoder.MSBFirst, []byte("Hello World")},
-		{"Thomas/LSB", encoder.Thomas, decoder.Thomas, encoder.LSBFirst, []byte("Hello World")},
-		{"Thomas/MSB", encoder.Thomas, decoder.Thomas, encoder.MSBFirst, []byte("Hello World")},
-		{"IEEE/binary", encoder.IEEE, decoder.IEEE, encoder.LSBFirst, []byte{0x00, 0xff, 0x55, 0xaa, 0x01, 0x80}},
-	}
+		{"configured clock", bitClockHz},
+		{"recovered clock", 0},
+	} {
+		for _, tt := range roundTripCases {
+			t.Run(clock.name+"/"+tt.name, func(t *testing.T) {
+				events := transmit(t, tt.data, tt.enc, tt.order, 2)
+				bits := receiveAt(t, events, tt.dec, clock.hz)
+				got := assemble(bits, tt.order)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			events := transmit(t, tt.data, tt.enc, tt.order, 2)
-			bits := receive(t, events, tt.dec)
-			got := assemble(bits, tt.order)
-
-			if string(got) != string(tt.data) {
-				t.Errorf("round trip returned %q (% 08b), want %q (% 08b)", got, got, tt.data, tt.data)
-			}
-		})
+				if string(got) != string(tt.data) {
+					t.Errorf("round trip returned %q (% 08b), want %q (% 08b)", got, got, tt.data, tt.data)
+				}
+			})
+		}
 	}
+}
+
+// roundTripCases covers both conventions, both bit orders and the byte values
+// whose bits produce only half-bit (0x00, 0xff) or only full-bit (0x55, 0xaa)
+// intervals.
+var roundTripCases = []struct {
+	name  string
+	enc   encoder.ManchesterEncoding
+	dec   decoder.ManchesterEncoding
+	order encoder.BitOrder
+	data  []byte
+}{
+	{"IEEE/LSB", encoder.IEEE, decoder.IEEE, encoder.LSBFirst, []byte("Hello World")},
+	{"IEEE/MSB", encoder.IEEE, decoder.IEEE, encoder.MSBFirst, []byte("Hello World")},
+	{"Thomas/LSB", encoder.Thomas, decoder.Thomas, encoder.LSBFirst, []byte("Hello World")},
+	{"Thomas/MSB", encoder.Thomas, decoder.Thomas, encoder.MSBFirst, []byte("Hello World")},
+	{"IEEE/binary", encoder.IEEE, decoder.IEEE, encoder.LSBFirst, []byte{0x00, 0xff, 0x55, 0xaa, 0x01, 0x80}},
 }
 
 // TestEncodingIsNotInverted pins down the polarity of both conventions:
@@ -366,7 +384,7 @@ func TestDecoderInfoIsConcurrencySafe(t *testing.T) {
 	const events = 2000
 
 	c := make(chan decoder.Event, 64)
-	d, err := decoder.New(c, 0) // no bit clock: clock discovery writes the state
+	d, err := decoder.New(c, 0) // no bit clock: clock recovery writes the state
 	if err != nil {
 		t.Fatalf("decoder.New: %v", err)
 	}
@@ -476,14 +494,14 @@ func TestDecoderNewRejectsInvalidConfig(t *testing.T) {
 }
 
 // TestDecoderNewAcceptsValidConfig pins down that a zero bit clock stays valid:
-// it selects clock discovery rather than being rejected as a missing value.
+// it selects clock recovery rather than being rejected as a missing value.
 func TestDecoderNewAcceptsValidConfig(t *testing.T) {
 	tests := []struct {
 		name    string
 		clockHz int
 	}{
 		{"fixed bit clock", bitClockHz},
-		{"clock discovery", 0},
+		{"clock recovery", 0},
 	}
 
 	for _, tt := range tests {

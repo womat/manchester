@@ -161,24 +161,25 @@ func TestEventHandlerRejectsAnIntervalAcrossLostEdges(t *testing.T) {
 	}
 }
 
-// TestClockDiscoverySkipsIntervalsAcrossLostEdges makes sure an interval that
-// spans lost edges does not enter the samples the bit clock is derived from.
-func TestClockDiscoverySkipsIntervalsAcrossLostEdges(t *testing.T) {
+// TestClockRecoverySkipsIntervalsAcrossLostEdges makes sure an interval that
+// spans lost edges does not enter the edges the bit clock is derived from.
+func TestClockRecoverySkipsIntervalsAcrossLostEdges(t *testing.T) {
 	d := newTestDecoder(t)
 	d.resynchronize()
 
 	dr := newDriver(d)
 	dr.now = dr.now.Add(testFullBit)
-	d.eventHandler(Event{Time: dr.now, Edge: FallingEdge, Missed: 1})
+	lost := Event{Time: dr.now, Edge: FallingEdge, Missed: 1}
+	d.eventHandler(lost)
 
-	if len(d.clockEventSamples) != 0 {
-		t.Errorf("clock discovery sampled %v across lost edges, want nothing", d.clockEventSamples)
+	if len(d.pending) != 1 || d.pending[0] != lost {
+		t.Errorf("clock recovery buffered %v, want only the edge after the gap", d.pending)
 	}
 
 	dr.edge = FallingEdge
 	dr.intervals(testHalfBit)
-	if len(d.clockEventSamples) != 1 || d.clockEventSamples[0] != testHalfBit {
-		t.Errorf("clock samples are %v, want [%v] measured from the event after the gap", d.clockEventSamples, testHalfBit)
+	if len(d.pending) != 2 || d.pending[1].Time.Sub(d.pending[0].Time) != testHalfBit {
+		t.Errorf("clock recovery buffered %v, want the interval measured from the edge after the gap", d.pending)
 	}
 }
 
@@ -199,7 +200,7 @@ func TestEventHandlerIgnoresUnknownEdges(t *testing.T) {
 
 // TestResynchronise covers the recovery path: after a run of unmatched
 // intervals the decoder gives up on the current timing and returns to clock
-// discovery instead of emitting Invalid forever.
+// recovery instead of emitting Invalid forever.
 func TestResynchronise(t *testing.T) {
 	d := newTestDecoder(t)
 
@@ -222,8 +223,8 @@ func TestResynchronise(t *testing.T) {
 	if !d.lastTimestamp.IsZero() {
 		t.Error("resynchronise kept a stale timestamp, the next interval would be bogus")
 	}
-	if len(d.clockEventSamples) != 0 {
-		t.Errorf("resynchronise kept %d clock samples, want none", len(d.clockEventSamples))
+	if len(d.pending) != 0 {
+		t.Errorf("resynchronise kept %d buffered edges, want none", len(d.pending))
 	}
 }
 
