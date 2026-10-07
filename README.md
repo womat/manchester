@@ -141,12 +141,37 @@ this, which is another reason to keep it.
 
 ## Timing
 
-The encoder waits one half-bit period after driving each level, measured from
-that moment and **without compensating** for a late wakeup. This is deliberate:
-the decoder validates every interval on its own against the nominal bit time, so
-a half-bit that runs slightly long is harmless, while a shortened one is decoded
+Half-bits end on a fixed schedule, so the small delay of every wakeup does not
+add up over a message. When the encoder falls behind that schedule by more than
+an eighth of a half-bit — after an idle period, or after the system stalled it —
+it restarts the schedule instead of **catching up**. This is deliberate: the
+decoder validates every interval on its own against the nominal bit time, so a
+half-bit that runs slightly long is harmless, while a shortened one is decoded
 as invalid. Catching up on a late half-bit by shortening the next one corrupts
 the signal instead of repairing it.
+
+Go's timers alone are too coarse for this. On Linux the runtime waits for them
+in `epoll_wait`, which counts whole milliseconds: a 500 µs timer fires after
+about 1 ms, a 2.5 ms one after 3 ms. The encoder therefore sleeps the last 2 ms
+of every half-bit in `nanosleep`, on its own OS thread with the timer slack
+reduced from the default 50 µs to 1 ns. Off Linux it falls back to `time.Sleep`.
+
+Measured on a Raspberry Pi 400 (encoder on one GPIO, decoder on another, looped
+back through a PC817 optocoupler, 50 messages of 56 bytes per rate):
+
+| Bit rate | half-bit error p99 | messages without error | with `chrt -f 50` and `GOGC=off` |
+|---|---|---|---|
+| 1000 bit/s | 3.3 % | 44/50 | 49/50 |
+| 2000 bit/s | 3.7 % | 48/50 | 45/50 |
+| 3000 bit/s | 12–15 % | not measured | 33/50 |
+
+Before this change, half-bits ran 115 % long at 1000 bit/s and nothing was
+decoded above 200 bit/s. What remains are rare stalls of up to about 1.5 ms,
+roughly 1 in 7000 half-bits at 1000 bit/s, caused by the garbage collector and
+by the scheduler together; each one costs the message it falls into. A sender
+that needs every message must add a checksum and retransmit — see
+[Not addressed](#not-addressed). Above about 3000 bit/s the fixed cost of
+driving the line and waking up approaches the tolerance on every half-bit.
 
 `Close()` aborts a transmission in progress and leaves the line at the level of
 the half-bit driven last. There is no idle-level option; callers that need a

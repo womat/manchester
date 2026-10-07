@@ -2,6 +2,7 @@ package encoder
 
 import (
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -293,6 +294,44 @@ func TestWaitHalfBitWaits(t *testing.T) {
 
 	if elapsed := time.Since(start); elapsed < e.halfBitPeriod {
 		t.Errorf("waitHalfBit returned after %v, want at least %v", elapsed, e.halfBitPeriod)
+	}
+}
+
+// TestWaitHalfBitKeepsSchedule is the regression test for half-bits measured
+// from each wakeup on Go timers: on Linux those fire on a millisecond grid, so
+// every 500µs half-bit took about 1ms and the line ran at half the bit rate.
+//
+// The bound is loose on purpose: the old code took more than twice the nominal
+// time, while a virtual machine, whose wakeups are often later than an eighth
+// of a half-bit, stretches the run by up to half. A Raspberry Pi stays within
+// a fraction of a percent.
+func TestWaitHalfBitKeepsSchedule(t *testing.T) {
+	const (
+		clockHz  = 1000 // half-bit period: 500µs
+		halfBits = 200
+	)
+
+	e, err := New(clockHz, func(Level) error { return nil })
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer e.Close()
+
+	// Run on a prepared thread, like the transmitting goroutine does.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	prepareThread()
+
+	start := time.Now()
+	for range halfBits {
+		if !e.waitHalfBit() {
+			t.Fatal("waitHalfBit reported a stopped encoder")
+		}
+	}
+
+	want := halfBits * e.halfBitPeriod
+	if elapsed := time.Since(start); elapsed > want*170/100 {
+		t.Errorf("%d half-bits took %v, want about %v", halfBits, elapsed.Round(time.Millisecond), want)
 	}
 }
 

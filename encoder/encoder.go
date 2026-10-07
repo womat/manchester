@@ -37,6 +37,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -74,6 +75,18 @@ const (
 
 var ErrEncoderStopped = errors.New("encoder stopped")
 
+const (
+	// maxLag is the fraction of a half-bit (1/maxLag) the encoder may fall
+	// behind its schedule before it restarts the schedule instead of
+	// shortening the next half-bit to catch up.
+	maxLag = 8
+
+	// preciseSpan is the final stretch of every half-bit that is slept in the
+	// kernel instead of on a Go timer. It covers the millisecond granularity of
+	// the runtime's timers with room for a late timer wakeup.
+	preciseSpan = 2 * time.Millisecond
+)
+
 // Encoder implements a Manchester encoder that runs in the background.
 type Encoder struct {
 	writeMutex         sync.Mutex         // Mutex to synchronize Write() access
@@ -82,6 +95,7 @@ type Encoder struct {
 	syncBytes          int                // Number of 0xFF bytes for synchronization before actual data
 	buffer             chan txByte        // Buffered channel for outgoing txBytes
 	halfBitPeriod      time.Duration      // Duration of one Manchester half-bit
+	deadline           time.Time          // End of the current half-bit; owned by the transmitting goroutine
 	setValue           SetValue           // Function to set the GPIO output level
 	bufferSize         int                // Size of the internal buffer channel
 	manchesterEncoding ManchesterEncoding // Type of Manchester encoding (e.g., IEEE vs. Thomas)
@@ -320,28 +334,56 @@ func (e *Encoder) encodeBit(bit byte) {
 	}
 }
 
-// waitHalfBit blocks for one half-bit period, starting from the moment the
-// level was driven.
+// waitHalfBit blocks until the end of the half-bit whose level was just driven.
 //
-// The period is deliberately measured from now instead of from a running
-// schedule: the decoder validates every interval on its own against the
-// nominal bit time, so a half-bit that runs slightly long is harmless, while
-// a shortened one is decoded as an invalid bit. Catching up on a late half-bit
-// by shortening the next one would therefore corrupt the signal rather than
-// repair it, and a free-running ticker does exactly that - after an idle
-// period its buffered tick truncates the first half-bits of the next message.
+// Half-bits end on a fixed schedule, so the small delay of every wakeup does
+// not add up over a message - measured from now instead, each half-bit runs
+// long by that delay, and at 1 kHz the line ends up at a different bit rate.
+//
+// The schedule is restarted from now when the encoder has fallen behind it by
+// more than 1/maxLag of a half-bit, after an idle period above all. The decoder
+// validates every interval on its own against the nominal bit time, so a
+// half-bit that runs long is harmless, while a shortened one is decoded as an
+// invalid bit: catching up on a late half-bit by shortening the next one would
+// corrupt the signal rather than repair it. A free-running ticker does exactly
+// that - after an idle period its buffered tick truncates the first half-bits
+// of the next message.
 //
 // It reports false if the encoder was stopped while waiting.
 func (e *Encoder) waitHalfBit() bool {
-	timer := time.NewTimer(e.halfBitPeriod)
-	defer timer.Stop()
-
-	select {
-	case <-e.ctx.Done():
-		return false
-	case <-timer.C:
-		return true
+	if now := time.Now(); e.deadline.IsZero() || now.Sub(e.deadline) > e.halfBitPeriod/maxLag {
+		e.deadline = now
 	}
+	e.deadline = e.deadline.Add(e.halfBitPeriod)
+
+	return e.sleepUntil(e.deadline)
+}
+
+// sleepUntil blocks until deadline and reports false if the encoder was
+// stopped meanwhile.
+//
+// Go's timers cannot do this alone: on Linux the runtime waits for them in
+// epoll_wait, which takes whole milliseconds, so a 500µs timer fires after
+// about 1ms and a 2.5ms one after 3ms. The wait therefore runs on a timer
+// until preciseSpan before the deadline, which keeps Close responsive, and
+// sleeps the rest in the kernel, which wakes within microseconds.
+func (e *Encoder) sleepUntil(deadline time.Time) bool {
+	if coarse := time.Until(deadline) - preciseSpan; coarse > 0 {
+		timer := time.NewTimer(coarse)
+		select {
+		case <-e.ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
+		}
+	}
+
+	if e.ctx.Err() != nil {
+		return false
+	}
+	sleepPrecise(deadline)
+
+	return e.ctx.Err() == nil
 }
 
 // setBit sets the GPIO level and logs any error.
@@ -354,7 +396,14 @@ func (e *Encoder) setBit(v Level) {
 }
 
 // processTxBytes runs in the background and transmits bytes from the buffer.
+//
+// It keeps its OS thread for its whole lifetime, so that sleepPrecise always
+// runs on the thread whose timer slack prepareThread has reduced. The thread
+// is never unlocked: the runtime then terminates it when the goroutine exits,
+// instead of handing the changed thread on to unrelated goroutines.
 func (e *Encoder) processTxBytes() {
+	runtime.LockOSThread()
+	prepareThread()
 
 	defer e.wg.Done()
 
