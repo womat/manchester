@@ -1,0 +1,32 @@
+# golangci-lint configuration for github.com/womat/manchester.
+#
+# Run it through scripts/check.sh rather than directly: it sets GOOS=linux, and
+# the two modules under demo/ are invisible to a root-level ./...
+#
+# The default linter set is kept. The exclusions below are decisions, not
+# convenience - each one says why.
+
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Encoder and Decoder have an explicit Close that callers must defer. A
+      # deferred Close has nowhere to return an error to, so errcheck and the
+      # convention are in direct conflict; the convention wins. Listed
+      # explicitly rather than switching errcheck off, so an unchecked error
+      # from anything else still gets reported.
+      exclude-functions:
+        - (*github.com/womat/manchester/encoder.Encoder).Close
+        - (*github.com/womat/manchester/decoder.Decoder).Close
+        # The demos close their gpio pins the same way.
+        - (github.com/womat/gpio.Pin).Close
+
+  exclusions:
+    rules:
+      # Test code may ignore what it is not asserting on. Reporting those buries
+      # the findings that matter under a list of things nobody intends to
+      # handle.
+      - path: _test\.go
+        linters:
+          - errcheck

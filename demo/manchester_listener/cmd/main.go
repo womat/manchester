@@ -29,9 +29,9 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/womat/golib/gpio"
-	"github.com/womat/golib/gpio/rpi"
-	"github.com/womat/golib/manchester/decoder"
+	"github.com/womat/gpio"
+	"github.com/womat/gpio/rpi"
+	"github.com/womat/manchester/decoder"
 )
 
 func main() {

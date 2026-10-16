@@ -1,7 +1,26 @@
 # manchester
 
-Manchester line coding: `encoder` turns bytes into a sequence of line levels,
-`decoder` turns a stream of edge events back into bits.
+[![CI](https://github.com/womat/manchester/actions/workflows/ci.yml/badge.svg)](https://github.com/womat/manchester/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/womat/manchester.svg)](https://pkg.go.dev/github.com/womat/manchester)
+
+Manchester line coding in Go: `encoder` turns bytes into a sequence of line
+levels, `decoder` turns a stream of edge events back into bits — at any bit
+rate, recovering the sender's clock from the signal.
+
+```sh
+go get github.com/womat/manchester
+```
+
+| Package | Purpose |
+|---|---|
+| `github.com/womat/manchester/encoder` | Bytes to line levels: IEEE 802.3 or Thomas, bit order, sync bytes, asynchronous sending |
+| `github.com/womat/manchester/decoder` | Edge events to bits: clock recovery or a fixed bit clock, timing tolerance, gap handling |
+
+This module used to be part of
+[github.com/womat/golib](https://github.com/womat/golib) as `golib/manchester`.
+The API is unchanged; only the import path differs. The copy in golib is
+deprecated and is removed there in golib v2. The demos use
+[github.com/womat/gpio](https://github.com/womat/gpio) for the line.
 
 Manchester encodes every bit as two half-bits of opposite level, so each bit
 carries a transition in its middle. That transition is the data, and it is also
@@ -18,7 +37,7 @@ bitwise complement of the payload.
 
 ## How the pieces fit
 
-Neither package imports `gpio`, and they do not import each other:
+Neither package imports [`gpio`](https://github.com/womat/gpio), and they do not import each other:
 
 - the **encoder** writes through a `func(Level) error` callback,
 - the **decoder** reads `decoder.Event` values from a channel.
@@ -26,8 +45,8 @@ Neither package imports `gpio`, and they do not import each other:
 The application provides the glue. That keeps the codec usable over any
 transport — a GPIO pin, a radio module, a file — and it is why the integration
 tests can wire both ends together in memory. See `demo/manchester_sender` and
-`demo/manchester_listener` for the GPIO wiring, and `roundtrip_test.go` in this
-directory for the in-memory variant.
+`demo/manchester_listener` for the GPIO wiring, and `roundtrip_test.go` in the
+repository root for the in-memory variant.
 
 ```
 bytes ──▶ encoder ──▶ SetValue(level) ──▶ line ──▶ edge events ──▶ decoder ──▶ bits
@@ -202,7 +221,7 @@ defined idle state must set it themselves afterwards.
 
 ## Tests
 
-`roundtrip_test.go` in this directory wires encoder and decoder into a virtual
+`roundtrip_test.go` in the repository root wires encoder and decoder into a virtual
 line and covers both conventions, both bit orders, a configured and a recovered
 clock, the polarity of the encoding and the encoder's half-bit timing. It lives
 here rather than in either package because it must import both. The packages
@@ -211,13 +230,19 @@ in `encoder`, clock recovery (`recovery_test.go`, with a synthetic sender whose
 clock is off, drifts and jitters) and event handling in `decoder`.
 
 ```sh
-go test ./manchester/...
-go test -race ./manchester/...
-go test ./manchester/decoder/ -run TestRecovery -v
+go test ./...
+go test -race ./...
+go test ./decoder/ -run TestRecovery -v
 ```
 
+`scripts/check.sh` runs `go fix`, `go vet`, `golangci-lint` and `govulncheck`
+over this module and the demos, with `GOOS=linux` by default: the encoder has a
+Linux-only file and the demos drive lines through `github.com/womat/gpio/rpi`.
+`--check` reports pending `go fix` work without writing, `--skip=vuln` drops
+the step that needs a network.
+
 Coverage is 89.9 % of statements in `encoder` and 91.5 % in `decoder`. The
-roundtrip test in this directory reports no statements of its own — it is pure
+roundtrip test in the root reports no statements of its own — it is pure
 integration.
 
 ## Not addressed
@@ -243,5 +268,17 @@ Known and deliberately left alone:
   — an inverted line decodes as the complement. Detecting it needs knowledge of
   the frame format, so it is left to the caller.
 
-Full API: `go doc github.com/womat/golib/manchester/encoder` and
-`.../manchester/decoder`.
+## Demos
+
+Each demo under `demo/` is a separate Go module with
+`replace github.com/womat/manchester => ../..`, so it always builds against the
+working copy. `make` cross-compiles for a Raspberry Pi, `make deploy` copies
+the binary over with `scp` — edit `PI_USER` and `PI_HOST` in the `Makefile`
+first.
+
+| Demo | Shows |
+|---|---|
+| `manchester_sender` | Sending frames over a GPIO output |
+| `manchester_listener` | Receiving them on a GPIO input, with clock recovery and frame reassembly |
+
+Full API: `go doc github.com/womat/manchester/encoder` and `.../decoder`.

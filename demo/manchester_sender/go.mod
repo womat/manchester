@@ -1,12 +1,15 @@
-module github.com/womat/golib/demo/manchester_sender
+module github.com/womat/manchester/demo/manchester_sender
 
 go 1.27
 
-require github.com/womat/golib v1.0.4
+require (
+	github.com/womat/gpio v1.0.1
+	github.com/womat/manchester v1.0.0
+)
 
 require (
-	github.com/warthog618/go-gpiocdev v0.10.0 // indirect
+	github.com/warthog618/go-gpiocdev v0.9.2 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )
 
-replace github.com/womat/golib => ../..
+replace github.com/womat/manchester => ../..

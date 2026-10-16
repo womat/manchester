@@ -1,0 +1,135 @@
+# Continuous integration for github.com/womat/manchester.
+#
+# The module itself builds everywhere, but encoder has a Linux-only file and
+# the demos drive real lines through github.com/womat/gpio/rpi, which only
+# builds on Linux - so the checks run on Linux, the platform that ships.
+#
+# Everything under demo/ is a separate Go module with its own go.mod and a
+# replace directive pointing at the repository root, so a root-level "go build
+# ./..." ignores the demos entirely. They get their own job.
+#
+# Actions are pinned to a commit SHA, with the release in a comment: a tag like
+# @v7 can be moved to other code, a SHA cannot. dependabot (.github/dependabot.yml)
+# proposes updates for them.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same ref supersedes a run still in flight.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Covers the demo modules too - gofmt does not care about module
+      # boundaries.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+  checks:
+    name: fix, lint, vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Pinned rather than @latest: a new release of either tool would
+      # otherwise turn this job red without a change in this repository. Raise
+      # them deliberately - dependabot does not see a go install line.
+      - name: install tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      # The same script a developer runs, so the two cannot drift. --check makes
+      # go fix report a pending diff and exit non-zero instead of writing it.
+      - name: scripts/check.sh --check
+        run: scripts/check.sh --check
+
+  library:
+    name: library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+      # -race because the encoder's sending goroutine and the decoder's
+      # shutdown are the parts worth testing.
+      - name: go test
+        run: go test -race -cover ./...
+
+  cross:
+    name: cross-compile (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Pi 1 / Zero", goos: linux, goarch: arm, goarm: "6" }
+          - { name: "Pi 2/3/4 32-bit", goos: linux, goarch: arm, goarm: "7" }
+          - { name: "Pi 3/4/5 64-bit", goos: linux, goarch: arm64 }
+          - { name: "linux amd64", goos: linux, goarch: amd64 }
+          - { name: "linux 386", goos: linux, goarch: "386" }
+          # The codec itself is portable; sleep_other.go covers the rest.
+          - { name: "windows amd64", goos: windows, goarch: amd64 }
+          - { name: "macOS arm64", goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: go build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: go build ./...
+
+  demos:
+    name: demo ${{ matrix.demo }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        demo: [manchester_sender, manchester_listener]
+    defaults:
+      run:
+        working-directory: demo/${{ matrix.demo }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: demo/${{ matrix.demo }}/go.mod
+      - name: go vet
+        run: go vet ./...
+      # The demos drive real GPIO lines and have no tests; building them is
+      # what keeps API changes from breaking the module's own examples.
+      - name: go build
+        run: go build -o /dev/null ./cmd

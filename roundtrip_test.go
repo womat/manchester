@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/womat/golib/manchester/decoder"
-	"github.com/womat/golib/manchester/encoder"
+	"github.com/womat/manchester/decoder"
+	"github.com/womat/manchester/encoder"
 )
 
 const (
