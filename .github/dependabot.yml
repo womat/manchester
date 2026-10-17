@@ -1,5 +1,5 @@
 # One gomod entry per module: everything under demo/ has its own go.mod, so a
-# single entry would leave two modules unwatched. All Go updates go into one
+# single entry would leave the demo modules unwatched. All Go updates go into one
 # group, so a week brings at most one pull request for them.
 #
 # To switch this off, delete this file. The CI workflow does not depend on it.
@@ -12,6 +12,7 @@ updates:
       - /
       - /demo/manchester_sender
       - /demo/manchester_listener
+      - /demo/manchester_bench
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

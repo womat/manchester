@@ -32,6 +32,7 @@ ALL_MODULES=(
 	.
 	demo/manchester_sender
 	demo/manchester_listener
+	demo/manchester_bench
 )
 
 ALL_STEPS=(fix vet lint vuln)

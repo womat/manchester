@@ -79,7 +79,7 @@ widen these exclusions to make a new finding go away; fix the finding or record 
 
 **CI:** `.github/workflows/ci.yml`, on pushes to `main` and pull requests, runs on Linux.
 Actions are pinned to a commit SHA with the release in a comment; dependabot updates the pins
-and the Go dependencies of all three modules in one group. Jobs: `format`, `checks`
+and the Go dependencies of all modules in one group. Jobs: `format`, `checks`
 (`scripts/check.sh --check`), `library` (vet plus `go test -race -cover`), `cross` (five Linux
-targets plus Windows and macOS — the codec is portable), `demos`. All three modules declare
+targets plus Windows and macOS — the codec is portable), `demos`. All modules declare
 `go 1.27`, the same as golib and its consumers; keep them in step.

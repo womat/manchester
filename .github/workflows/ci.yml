@@ -118,7 +118,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        demo: [manchester_sender, manchester_listener]
+        demo: [manchester_sender, manchester_listener, manchester_bench]
     defaults:
       run:
         working-directory: demo/${{ matrix.demo }}

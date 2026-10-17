@@ -280,5 +280,6 @@ first.
 |---|---|
 | `manchester_sender` | Sending frames over a GPIO output |
 | `manchester_listener` | Receiving them on a GPIO input, with clock recovery and frame reassembly |
+| `manchester_bench` | Measuring a GPIO path: known frames sent from Go or jitter-free via SPI, intact frames and half-bit timing error on the receiving side (`series.sh` runs a full series) |
 
 Full API: `go doc github.com/womat/manchester/encoder` and `.../decoder`.
