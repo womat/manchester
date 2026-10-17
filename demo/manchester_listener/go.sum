@@ -10,8 +10,8 @@ github.com/warthog618/go-gpiocdev v0.10.0 h1:StR6I/Wjpnl1XQsTt7D0hlUDsaetNAUeTsv
 github.com/warthog618/go-gpiocdev v0.10.0/go.mod h1:Hj1ECwLE3Hy8trth5BoT/WanO02zdoSmg3a5CTNasHA=
 github.com/warthog618/go-gpiosim v0.1.2 h1:8RsinSKZbsG6REhfVDpBr7gdzQeJ7RoCUxLR9oUlk0M=
 github.com/warthog618/go-gpiosim v0.1.2/go.mod h1:YXsnB+I9jdCMY4YAlMSRrlts25ltjmuIsrnoUrBLdqU=
-github.com/womat/gpio v1.0.2 h1:y/LcN2scNdClXkFC8V4AalbMrbzXNteKMQODNgGUIsI=
-github.com/womat/gpio v1.0.2/go.mod h1:gPWLljplbA0wSGA+Xw7iLxbIk58gJ8VFMj7tjWPai8k=
+github.com/womat/gpio v1.0.3 h1:Zp6SOqTZO5EVYxreAh1iqzCT7vMvjNziiVV86iP+gi0=
+github.com/womat/gpio v1.0.3/go.mod h1:gPWLljplbA0wSGA+Xw7iLxbIk58gJ8VFMj7tjWPai8k=
 golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
 golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=

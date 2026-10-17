@@ -3,7 +3,7 @@ module github.com/womat/manchester/demo/manchester_sender
 go 1.27
 
 require (
-	github.com/womat/gpio v1.0.2
+	github.com/womat/gpio v1.0.3
 	github.com/womat/manchester v1.0.0
 )
 
