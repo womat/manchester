@@ -35,9 +35,13 @@ Demos: `cd demo/<name>` first, then use its `Makefile`; `make deploy` scp's the 
 
 There is one branch, `main`; a version is an annotated tag `vX.Y.Z` on it.
 
-**This repository always authenticates as `womat`.** The remote goes through the
-`github-priv` host alias from `~/.ssh/config`; a fresh clone needs
-`git remote set-url origin git@github-priv:womat/manchester.git`.
+**This repository always authenticates as `womat`, over SSH:** the remote is
+`git@github.com:womat/manchester.git`, no host alias. The key for `womat` comes from the git
+config of the checkout's directory (`core.sshCommand`, via `includeIf gitdir:`), the same way as
+for tadl. An HTTPS remote — what `gh repo clone` creates — authenticates through the keychain
+with whichever account is stored there and is refused; a fresh clone needs
+`git remote set-url origin git@github.com:womat/manchester.git`, or clone with
+`git clone git@github.com:womat/manchester.git` in the first place.
 
 ## Architecture
 
