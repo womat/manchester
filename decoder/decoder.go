@@ -192,10 +192,14 @@ type Decoder struct {
 	bufferOverflowCount atomic.Uint64 // Count of buffer overflows when sending bits
 	resyncCount         atomic.Uint64 // Count of resynchronizations due to invalid intervals
 
-	eventC <-chan Event // Input channel for GPIO events
-	c      chan Bit     // Output channel for decoded bits
+	bitClockHz int // Configured bit clock, 0 for clock recovery; Reset returns to it
+
+	eventC <-chan Event       // Input channel for GPIO events
+	c      chan Bit           // Output channel for decoded bits
+	resetC chan chan struct{} // Reset requests, applied between two events
 
 	wg     sync.WaitGroup
+	ctx    context.Context // Done once the decoder is closed
 	cancel context.CancelFunc
 	logger *slog.Logger // Optional logger for debugging and info
 }
@@ -227,6 +231,8 @@ func New(c <-chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
 
 	d := &Decoder{
 		eventC:     c,
+		resetC:     make(chan chan struct{}),
+		bitClockHz: bitClockHz,
 		pending:    make([]Event, 0, maxPending),
 		bufferSize: 1024,
 	}
@@ -245,23 +251,61 @@ func New(c <-chan Event, bitClockHz int, opts ...Option) (*Decoder, error) {
 	}
 
 	d.c = make(chan Bit, d.bufferSize)
-	if bitClockHz > 0 {
-		// If a frequency is provided, calculate the expected bit periods and tolerances directly.
-		fullBitTime := time.Duration(int64(time.Second) / int64(bitClockHz))
-		d.fullBitTime.Store(fullBitTime)
-		d.halfBitTime = fullBitTime / 2
-		d.fullBitTimeTolerance = fullBitTime * bitTimeTolerance / 100
-		d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
-		d.state.Store(decodeData) // Skip clock recovery if frequency is known
-	}
+	d.useConfiguredClock()
 
 	// Start the decoding process in a separate goroutine.
 
-	ctx, cancel := context.WithCancel(context.Background())
-	d.cancel = cancel
+	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.wg.Add(1)
-	go d.listenForEvents(ctx)
+	go d.listenForEvents(d.ctx)
 	return d, nil
+}
+
+// useConfiguredClock calculates the bit periods and tolerances from a
+// configured bit clock and skips clock recovery. Without one it does nothing.
+func (d *Decoder) useConfiguredClock() {
+	if d.bitClockHz <= 0 {
+		return
+	}
+	fullBitTime := time.Duration(int64(time.Second) / int64(d.bitClockHz))
+	d.fullBitTime.Store(fullBitTime)
+	d.halfBitTime = fullBitTime / 2
+	d.fullBitTimeTolerance = fullBitTime * bitTimeTolerance / 100
+	d.halfBitTimeTolerance = d.halfBitTime * bitTimeTolerance / 100
+	d.state.Store(decodeData)
+}
+
+// Reset returns the decoder to the state New left it in: a configured bit
+// clock is restored, a recovered one discarded and recovered anew. Buffered
+// edges and the bit phase are dropped; bits already delivered stay on Bits().
+//
+// It is meant for a caller that sees edges arrive but nothing useful come out
+// of them, and is safe to call from any goroutine. The reset is applied
+// between two events, and Reset returns once it has been. After Close it
+// returns at once and does nothing.
+func (d *Decoder) Reset() {
+	done := make(chan struct{})
+	select {
+	case d.resetC <- done:
+		<-done
+	case <-d.ctx.Done():
+	}
+}
+
+// reset applies a Reset in the decoding goroutine.
+func (d *Decoder) reset() {
+	d.state.Store(discoverClock)
+	d.pending = d.pending[:0]
+	d.tracking = false
+	d.phaseKnown = false
+	d.invalidIntervalCount = 0
+	d.invalidSinceHalfBit = 0
+	d.receivedHalfBit = 0
+	d.lastTimestamp = time.Time{}
+	d.useConfiguredClock()
+	if d.logger != nil {
+		d.logger.Debug("decoder reset", "bitClockHz", d.bitClockHz)
+	}
 }
 
 func WithBufferSize(size int) Option {
@@ -506,6 +550,9 @@ func (d *Decoder) listenForEvents(ctx context.Context) {
 				return // Exit if the buffer channel is closed
 			}
 			d.eventHandler(evt)
+		case done := <-d.resetC:
+			d.reset()
+			close(done)
 		}
 	}
 }

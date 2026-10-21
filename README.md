@@ -159,10 +159,17 @@ the run above every time — a DL-Bus receiver stayed at 100 instead of 50 Hz
 for hours that way and delivered no valid bit. With the right clock a stretch
 without half bits is alternating data and has no invalid interval; pauses
 between transmissions are invalid, but every preamble brings half bits.
-`Info()` reports the current
-state, the current frequency, the buffer overflow count (bits dropped because
-the consumer did not keep up) and the resync count; it is safe to call from
-another goroutine.
+
+`Info()` reports the current state, the current frequency, the buffer overflow
+count (bits dropped because the consumer did not keep up) and the resync count;
+it is safe to call from another goroutine.
+
+`Reset()` returns the decoder to the state `New` left it in: a configured bit
+clock is restored, a recovered one discarded and recovered anew. It is for a
+caller that knows more than the decoder — edges arrive, but its own framing
+finds nothing — and wants a fresh start without tearing down the channel and
+the goroutine. It is safe to call from any goroutine, is applied between two
+events, and returns once it has been; after `Close()` it does nothing.
 
 ## What the decoder does not do
 
