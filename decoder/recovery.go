@@ -23,6 +23,10 @@ import "time"
 //     lost.
 //   - Every valid interval then moves the clock a little towards its own
 //     length, so the decoder follows a sender whose clock drifts.
+//   - A lock on noise can still hit twice the real rate. The real signal then
+//     keeps it there: its T fits the wrong full bit, its 2T is invalid, and no
+//     interval is a half bit any more. A run of invalid intervals without a
+//     half bit in between discards such a clock (see invalidInterval).
 
 const (
 	// lockIntervals is the number of consecutive intervals the clock is
@@ -87,6 +91,8 @@ func (d *Decoder) recoverPhase(event Event) {
 
 	if d.isFullBit(delta) {
 		d.resolvePhase()
+	} else {
+		d.invalidSinceHalfBit = 0
 	}
 }
 

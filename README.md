@@ -149,7 +149,17 @@ more than one edge, and it never enters the clock estimate. The glue sets
 pause between two transmissions, too — also resets the phase, which is settled
 again at the next full-bit interval; the clock is kept. After more than 20
 consecutive invalid intervals the decoder discards its timing and recovers
-the clock anew, also when it was configured. `Info()` reports the current
+the clock anew, also when it was configured.
+
+A recovered clock is also discarded after 16 invalid intervals without a
+single half bit in between. A burst of noise can make the decoder lock on
+twice the real rate, and the real signal would keep it there: its T fits the
+wrong full bit, its 2T is invalid, and the valid intervals in between reset
+the run above every time — a DL-Bus receiver stayed at 100 instead of 50 Hz
+for hours that way and delivered no valid bit. With the right clock a stretch
+without half bits is alternating data and has no invalid interval; pauses
+between transmissions are invalid, but every preamble brings half bits.
+`Info()` reports the current
 state, the current frequency, the buffer overflow count (bits dropped because
 the consumer did not keep up) and the resync count; it is safe to call from
 another goroutine.

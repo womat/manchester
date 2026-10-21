@@ -286,6 +286,54 @@ func TestRecoveryResynchronises(t *testing.T) {
 	}
 }
 
+// TestRecoveryLeavesTwiceTheClock is the regression test for a decoder that
+// stayed locked on twice the bit rate for hours: a burst of noise made it lock
+// on 100 Hz, and the 50 Hz signal that followed kept it there. Its half bits
+// fit the full bit of the wrong clock and reset the run of invalid intervals
+// every time, so the decoder never resynchronised and delivered no valid bit.
+// A clock that sees invalid intervals but no half bit is the wrong multiple.
+func TestRecoveryLeavesTwiceTheClock(t *testing.T) {
+	s := newSignal(IEEE, constant(100)).send(frame(1, 30)...)
+	s.half = constant(50)
+	var last []Bit
+	for i := range 5 {
+		last = frame(uint64(10+i), 100)
+		s.pause(500 * time.Millisecond).send(last...)
+	}
+
+	d, got := decode(t, IEEE, s.events)
+
+	if info := d.Info(); !strings.Contains(info, "50.00 Hz") {
+		t.Errorf("Info() = %q, want the real clock of 50 Hz", info)
+	}
+	if len(got) < len(last) || !slices.Equal(got[len(got)-len(last):], last) {
+		t.Errorf("the last frame was not decoded, %d bits in total", len(got))
+	}
+}
+
+// TestRecoveryKeepsTheClockAcrossManyPauses covers the other side of
+// TestRecoveryLeavesTwiceTheClock: every pause between frames is an invalid
+// interval, and alternating data has no half bit. The half bits of each
+// preamble, seen while the phase is settled again, must still count, or the
+// pauses add up and a correct clock is thrown away.
+func TestRecoveryKeepsTheClockAcrossManyPauses(t *testing.T) {
+	alternating := frame(0, 0) // preamble and the low start bit
+	for i := range 100 {
+		alternating = append(alternating, Bit((i+1)%2))
+	}
+
+	s := newSignal(IEEE, constant(50))
+	for range 2 * wrongClockThreshold {
+		s.send(alternating...).pause(500 * time.Millisecond)
+	}
+
+	d, _ := decode(t, IEEE, s.events)
+
+	if n := d.resyncCount.Load(); n != 0 {
+		t.Errorf("resync count is %d, want 0: pauses alone must not discard the clock", n)
+	}
+}
+
 // TestRecoveryReportsTheClock makes sure Info() shows the recovered clock.
 func TestRecoveryReportsTheClock(t *testing.T) {
 	d, _ := decode(t, IEEE, newSignal(IEEE, constant(488)).send(frame(9, 50)...).events)

@@ -147,6 +147,11 @@ const (
 
 	bitTimeTolerance = 25 // Percent tolerance for half/full bit timing
 	invalidThreshold = 20 // Max consecutive invalid intervals before resync
+
+	// wrongClockThreshold is the number of invalid intervals without a single
+	// half bit in between after which a recovered clock counts as twice the
+	// real one and is discarded. See invalidInterval.
+	wrongClockThreshold = 16
 )
 
 // atomicDuration is a time.Duration that is safe for concurrent access.
@@ -182,6 +187,7 @@ type Decoder struct {
 	fullBitTimeTolerance time.Duration // Full bit period tolerance
 	halfBitTimeTolerance time.Duration // Half-bit period tolerance
 	invalidIntervalCount uint64        // Count of consecutive invalid events
+	invalidSinceHalfBit  uint64        // With a recovered clock: invalid intervals since the last half bit
 
 	bufferOverflowCount atomic.Uint64 // Count of buffer overflows when sending bits
 	resyncCount         atomic.Uint64 // Count of resynchronizations due to invalid intervals
@@ -383,6 +389,7 @@ func (d *Decoder) eventHandler(event Event) {
 
 	if event.Missed == 0 && withinTolerance(delta, d.halfBitTime, d.halfBitTimeTolerance) {
 		d.invalidIntervalCount = 0
+		d.invalidSinceHalfBit = 0
 		if d.tracking {
 			d.track(delta, false)
 		}
@@ -411,6 +418,14 @@ func (d *Decoder) eventHandler(event Event) {
 // interval starts a new buffer, and the phase is settled again at the next
 // full-bit interval. With a configured clock the decoder keeps pairing half
 // bits as before.
+//
+// A recovered clock is also discarded after wrongClockThreshold invalid
+// intervals without a half bit in between. Locked on twice the real rate, the
+// decoder takes every real half bit for a full bit and every real full bit for
+// an invalid interval, and never sees a half bit of its own; the valid
+// intervals keep resetting the run, so the threshold above never trips. With
+// the right clock, a stretch of alternating bits has no half bit either, but
+// no invalid interval.
 func (d *Decoder) invalidInterval(event Event, delta time.Duration) {
 	d.receivedHalfBit = 0
 	d.invalidIntervalCount++
@@ -422,6 +437,18 @@ func (d *Decoder) invalidInterval(event Event, delta time.Duration) {
 	if d.invalidIntervalCount > invalidThreshold {
 		d.resynchronize()
 		return
+	}
+
+	if d.tracking {
+		d.invalidSinceHalfBit++
+		if d.invalidSinceHalfBit >= wrongClockThreshold {
+			if d.logger != nil {
+				d.logger.Debug("no half bit in a run of invalid intervals, discarding the recovered clock",
+					"frequency", 1/d.fullBitTime.Load().Seconds())
+			}
+			d.resynchronize()
+			return
+		}
 	}
 
 	if d.tracking {
@@ -458,6 +485,7 @@ func (d *Decoder) resynchronize() {
 	d.pending = d.pending[:0] // reset the buffer without reallocating (keep capacity)
 	d.phaseKnown = false
 	d.invalidIntervalCount = 0
+	d.invalidSinceHalfBit = 0
 	d.receivedHalfBit = 0
 	d.lastTimestamp = time.Time{} // reset timestamp to avoid stale delta calculation on next event
 }
