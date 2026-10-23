@@ -296,6 +296,8 @@ func (d *Decoder) Reset() {
 func (d *Decoder) reset() {
 	d.state.Store(discoverClock)
 	d.pending = d.pending[:0]
+	// Untested on purpose: it needs a configured clock that resynchronised
+	// and locked again, a long setup for a line as plain as the ones beside it.
 	d.tracking = false
 	d.phaseKnown = false
 	d.invalidIntervalCount = 0
@@ -435,6 +437,8 @@ func (d *Decoder) eventHandler(event Event) {
 
 	if event.Missed == 0 && withinTolerance(delta, d.halfBitTime, d.halfBitTimeTolerance) {
 		d.invalidIntervalCount = 0
+		// Untested on purpose: after an invalid interval recoverPhase resets
+		// it as well, so this is likely redundant - kept until shown otherwise.
 		d.invalidSinceHalfBit = 0
 		if d.tracking {
 			d.track(delta, false)
