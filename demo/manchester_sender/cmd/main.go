@@ -64,7 +64,8 @@ func main() {
 		encoder.WithBitOrder(order),
 		encoder.WithSyncBytes(*sync),
 		encoder.WithManchesterEncoding(encoding),
-		// comment out the next line to disable debug logging in the encoder
+		// the encoder sends from a background goroutine: without a handler,
+		// a failing SetValue goes unnoticed
 		encoder.WithErrorHandler(func(err error) { slog.Error("encoder GPIO error", "error", err) }),
 	)
 
@@ -77,7 +78,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Warten, bis alles gesendet wurde
+	// Block until everything has been transmitted
 	enc.Wait()
 	log.Println("Message sent!")
 }

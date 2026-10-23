@@ -1,7 +1,7 @@
-// Package encoder implements a Manchester encoder for GPIO pins.
-// It supports configurable bit order (LSB/MSB), optional sync bytes,
-// non-blocking writes, and can be used with any GPIO implementation
-// that provides a SetValue(Level) error function.
+// Package encoder implements a Manchester encoder.
+// It supports configurable bit order (LSB/MSB), optional sync bytes and
+// asynchronous sending, and drives any line - a GPIO pin, a radio module, a
+// file - through a SetValue(Level) error callback.
 //
 // # Example usage
 //
@@ -89,7 +89,7 @@ const (
 
 // Encoder implements a Manchester encoder that runs in the background.
 type Encoder struct {
-	writeMutex         sync.Mutex         // Mutex to synchronize Write() access
+	writeMutex         sync.Mutex         // Mutex to synchronize Send() access
 	bitClockHz         int                // frequency in Hz (e.g., 50 Hz)
 	bitOrder           BitOrder           // Order of bits: LSBFirst or MSBFirst
 	syncBytes          int                // Number of 0xFF bytes for synchronization before actual data
@@ -391,7 +391,7 @@ func (e *Encoder) sleepUntil(deadline time.Time) bool {
 	return e.ctx.Err() == nil
 }
 
-// setBit sets the GPIO level and logs any error.
+// setBit sets the line level and reports any error to onError.
 func (e *Encoder) setBit(v Level) {
 	if err := e.setValue(v); err != nil {
 		if e.onError != nil {

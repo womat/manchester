@@ -73,7 +73,7 @@ func main() {
 	decoderEvents := make(chan decoder.Event, 1024)
 	dec, err := decoder.New(decoderEvents, *bitClock,
 		decoder.WithManchesterEncoding(encoding),
-		// comment out the next line to disable debug logging in the decoder
+		// uncomment the next line for per-interval debug output from the decoder
 		//	decoder.WithLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 	)
 	if err != nil {

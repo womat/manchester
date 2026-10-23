@@ -18,7 +18,8 @@ go get github.com/womat/manchester
 
 This module used to be part of
 [github.com/womat/golib](https://github.com/womat/golib) as `golib/manchester`.
-The API is unchanged; only the import path differs. The copy in golib is
+The API is a superset of the one there — `Decoder.Reset` exists only here — so
+moving over only changes the import path. The copy in golib is
 deprecated and is removed there in golib v2. The demos use
 [github.com/womat/gpio](https://github.com/womat/gpio) for the line.
 
@@ -110,7 +111,7 @@ for bit := range dec.Bits() {
 | Decoder option | Default | Comment |
 |---|---|---|
 | `WithManchesterEncoding(IEEE\|Thomas)` | `IEEE` | must match the encoder |
-| `WithBufferSize(n)` | `1024` | bits the `Bits()` channel holds before bits are dropped and counted |
+| `WithBufferSize(n)` | `1024` | bits the `Bits()` channel holds before bits are dropped and counted; values ≤ 0 ignored |
 | `WithLogger(*slog.Logger)` | discard | per-interval debug output; expensive at speed, meant for bringing a link up |
 
 The bit clock argument decides how the timing is established:
@@ -258,9 +259,8 @@ Linux-only file and the demos drive lines through `github.com/womat/gpio/rpi`.
 `--check` reports pending `go fix` work without writing, `--skip=vuln` drops
 the step that needs a network.
 
-Coverage is 89.9 % of statements in `encoder` and 91.5 % in `decoder`. The
-roundtrip test in the root reports no statements of its own — it is pure
-integration.
+`go test -cover ./...` reports the coverage of each package. The roundtrip
+test in the root reports no statements of its own — it is pure integration.
 
 ## Not addressed
 
