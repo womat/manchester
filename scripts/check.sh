@@ -83,10 +83,11 @@ require_tool() {
 	exit 2
 }
 
+# Same versions as .github/workflows/ci.yml; raise both together.
 step_skipped lint || require_tool golangci-lint \
-	'go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest' lint
+	'go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0' lint
 step_skipped vuln || require_tool govulncheck \
-	'go install golang.org/x/vuln/cmd/govulncheck@latest' vuln
+	'go install golang.org/x/vuln/cmd/govulncheck@v1.8.0' vuln
 
 # Bold only when stdout is a terminal, so redirected output stays clean.
 if [ -t 1 ]; then

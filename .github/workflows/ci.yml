@@ -59,7 +59,8 @@ jobs:
 
       # Pinned rather than @latest: a new release of either tool would
       # otherwise turn this job red without a change in this repository. Raise
-      # them deliberately - dependabot does not see a go install line.
+      # them deliberately - dependabot does not see a go install line - and in
+      # scripts/check.sh as well.
       - name: install tools
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
