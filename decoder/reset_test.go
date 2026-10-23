@@ -95,3 +95,30 @@ func TestResetAfterClose(t *testing.T) {
 		t.Fatal("Reset blocked on a closed decoder")
 	}
 }
+
+// TestResetAfterTheEventsEnd is the regression test for a Reset that blocked
+// forever: once the event channel was closed the decoding goroutine was gone,
+// but until Close nothing told Reset so.
+func TestResetAfterTheEventsEnd(t *testing.T) {
+	c := make(chan Event)
+	d, err := New(c, 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer d.Close()
+
+	close(c)
+	for range d.Bits() {
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		d.Reset()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("Reset blocked after the event channel was closed")
+	}
+}

@@ -537,6 +537,9 @@ func (d *Decoder) resynchronize() {
 // listenForEvents listens for events from eventC and processes them asynchronously
 func (d *Decoder) listenForEvents(ctx context.Context) {
 	defer func() {
+		// Also when the event channel was closed: a later Reset must not wait
+		// for a goroutine that is gone.
+		d.cancel()
 		close(d.c)
 		d.wg.Done()
 	}()
