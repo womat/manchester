@@ -355,3 +355,50 @@ func TestWaitHalfBitReportsShutdown(t *testing.T) {
 		t.Errorf("waitHalfBit blocked for %v on a closed encoder, want an immediate return", elapsed)
 	}
 }
+
+// TestWaitReturnsAfterClose guards the stop paths: every byte counted for Wait
+// must be counted off again when Close discards it, whether it was still
+// waiting for buffer space or already in the buffer. A byte left over makes
+// Wait block forever.
+func TestWaitReturnsAfterClose(t *testing.T) {
+	tests := []struct {
+		name       string
+		bufferSize int
+	}{
+		{"bytes waiting for buffer space", 1},
+		{"bytes in the buffer", 64},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// A half-bit period of 50ms: the first byte is still on the line
+			// when Close comes.
+			e, err := New(10, func(Level) error { return nil }, WithBufferSize(tt.bufferSize))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			sent := make(chan struct{})
+			go func() {
+				defer close(sent)
+				_, _ = e.Send(make([]byte, 32)) // ErrEncoderStopped is expected
+			}()
+			time.Sleep(20 * time.Millisecond)
+			if err := e.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			<-sent
+
+			waited := make(chan struct{})
+			go func() {
+				e.Wait()
+				close(waited)
+			}()
+			select {
+			case <-waited:
+			case <-time.After(time.Second):
+				t.Fatal("Wait blocked after Close")
+			}
+		})
+	}
+}

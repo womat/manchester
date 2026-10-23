@@ -262,6 +262,48 @@ func TestRecoveryAfterLostEdges(t *testing.T) {
 	}
 }
 
+// TestRecoveryRejectsLostEdgesWhilePhasing covers an interval across lost
+// edges while the phase is unknown: even when its length fits a full bit, it
+// must not settle the phase - the edge it ends on need not be a mid-bit edge.
+func TestRecoveryRejectsLostEdgesWhilePhasing(t *testing.T) {
+	s := newSignal(IEEE, constant(488)).send(frame(1, 80)...)
+	d, _ := decode(t, IEEE, s.events)
+
+	// A pause leaves the phase unknown, with the edge after it buffered.
+	last := s.events[len(s.events)-1]
+	after := Event{Time: last.Time.Add(100 * time.Millisecond), Edge: RisingEdge - last.Edge}
+	d.eventHandler(after)
+	lost := Event{Time: after.Time.Add(d.fullBitTime.Load()), Edge: RisingEdge - after.Edge, Missed: 1}
+	d.eventHandler(lost)
+
+	if got := bits(d); !slices.Equal(got, []Bit{Invalid, Invalid}) {
+		t.Errorf("the pause and the interval across lost edges produced %v, want two Invalid", got)
+	}
+	if d.phaseKnown {
+		t.Error("an interval across lost edges settled the phase")
+	}
+}
+
+// TestRecoveryBoundsItsBuffer makes sure a signal that never locks - a run of
+// identical bits shows only half-bit intervals - cannot grow the edge buffer
+// without bound in a long-running receiver, and that the newest edges are kept.
+func TestRecoveryBoundsItsBuffer(t *testing.T) {
+	d := newTestDecoder(t)
+	d.resynchronize()
+
+	dr := newDriver(d)
+	for range 4 * maxPending {
+		dr.intervals(testHalfBit)
+	}
+
+	if n := len(d.pending); n > maxPending {
+		t.Errorf("clock recovery buffered %d edges, want at most %d", n, maxPending)
+	}
+	if !d.pending[len(d.pending)-1].Time.Equal(dr.now) {
+		t.Error("clock recovery dropped the newest edge instead of the oldest")
+	}
+}
+
 // TestRecoveryResynchronises covers a sender that changes its bit rate: the
 // old clock produces a run of invalid intervals, the decoder discards it and
 // recovers the new one.
