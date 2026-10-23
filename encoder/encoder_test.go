@@ -3,6 +3,7 @@ package encoder
 import (
 	"errors"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -400,5 +401,46 @@ func TestWaitReturnsAfterClose(t *testing.T) {
 				t.Fatal("Wait blocked after Close")
 			}
 		})
+	}
+}
+
+// TestCloseStopsDrivingTheLine guards what Close documents: a transmission in
+// progress is aborted and the line stays at the level driven last. Without the
+// check at the start of every bit, the rest of the byte would go out as a burst
+// of level changes, each half-bit wait returning at once.
+func TestCloseStopsDrivingTheLine(t *testing.T) {
+	var calls atomic.Int64
+
+	// A half-bit period of 50ms: Close comes in the middle of the first one.
+	e, err := New(10, func(Level) error {
+		calls.Add(1)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := e.Send([]byte{0x55}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	before := calls.Load()
+	if err := e.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if n := calls.Load() - before; n > 1 {
+		t.Errorf("SetValue was called %d times during Close, want at most 1", n)
+	}
+}
+
+// TestWithBufferSizeIgnoresInvalidValues covers the documented guard: a size
+// of zero or below keeps the default instead of an unbuffered channel or a
+// panic in New.
+func TestWithBufferSizeIgnoresInvalidValues(t *testing.T) {
+	for _, size := range []int{0, -1} {
+		e, _ := newRecordingEncoder(t, WithBufferSize(size))
+		if got := cap(e.buffer); got != 1024 {
+			t.Errorf("WithBufferSize(%d): buffer holds %d bytes, want the default 1024", size, got)
+		}
 	}
 }

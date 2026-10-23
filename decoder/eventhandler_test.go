@@ -76,6 +76,18 @@ func bits(d *Decoder) []Bit {
 	}
 }
 
+// TestWithBufferSizeIgnoresInvalidValues covers the guard in WithBufferSize: a
+// size of zero or below keeps the default instead of an unbuffered channel,
+// which would drop every bit, or a panic in New.
+func TestWithBufferSizeIgnoresInvalidValues(t *testing.T) {
+	for _, size := range []int{0, -1} {
+		d := newTestDecoder(t, WithBufferSize(size))
+		if got := cap(d.c); got != 1024 {
+			t.Errorf("WithBufferSize(%d): Bits() holds %d bits, want the default 1024", size, got)
+		}
+	}
+}
+
 // TestEventHandlerFullBitInterval covers the unambiguous case: a full bit
 // period between two edges means the current edge is a mid-bit edge, and the
 // bit is decoded from its direction right away.
