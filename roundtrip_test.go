@@ -430,6 +430,7 @@ func TestEncoderNewRejectsInvalidConfig(t *testing.T) {
 		{"negative bit clock", -1, setValue, nil},
 		{"nil setValue", bitClockHz, nil, nil},
 		{"unknown encoding", bitClockHz, setValue, []encoder.Option{encoder.WithManchesterEncoding(42)}},
+		{"unknown bit order", bitClockHz, setValue, []encoder.Option{encoder.WithBitOrder(42)}},
 	}
 
 	for _, tt := range tests {

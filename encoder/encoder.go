@@ -115,7 +115,7 @@ type Encoder struct {
 // and starts the transmitting goroutine.
 //
 // It returns an error if bitClockHz is not positive, if setValue is nil, or if
-// an unsupported Manchester encoding was selected.
+// an unsupported Manchester encoding or bit order was selected.
 // Call Close() to stop the encoder and wait for a clean shutdown.
 func New(bitClockHz int, setValue SetValue, opts ...Option) (*Encoder, error) {
 	if bitClockHz <= 0 {
@@ -145,6 +145,11 @@ func New(bitClockHz int, setValue SetValue, opts ...Option) (*Encoder, error) {
 		e.encodingTable = encodingTable(e.manchesterEncoding)
 	default:
 		return nil, fmt.Errorf("unsupported Manchester encoding: %v", e.manchesterEncoding)
+	}
+
+	// encodeByte sends no data bits for any other value.
+	if e.bitOrder != LSBFirst && e.bitOrder != MSBFirst {
+		return nil, fmt.Errorf("unsupported bit order: %v", e.bitOrder)
 	}
 
 	bitPeriod := time.Second / time.Duration(bitClockHz)
