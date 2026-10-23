@@ -3,6 +3,7 @@ package encoder
 import (
 	"errors"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -441,6 +442,100 @@ func TestWithBufferSizeIgnoresInvalidValues(t *testing.T) {
 		e, _ := newRecordingEncoder(t, WithBufferSize(size))
 		if got := cap(e.buffer); got != 1024 {
 			t.Errorf("WithBufferSize(%d): buffer holds %d bytes, want the default 1024", size, got)
+		}
+	}
+}
+
+// TestSendAfterCloseReturnsError is the regression test for a panic: Close()
+// closes the internal buffer, and Send() used to select on a send into that
+// channel afterwards. A send on a closed channel is "ready" in a select and
+// panics, so Send() panicked roughly every other call instead of returning
+// ErrEncoderStopped as documented.
+func TestSendAfterCloseReturnsError(t *testing.T) {
+	for range 50 {
+		e, err := New(unitTestClockHz, func(Level) error { return nil })
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := e.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		n, err := e.Send([]byte("data"))
+		if !errors.Is(err, ErrEncoderStopped) {
+			t.Fatalf("Send after Close returned (%d, %v), want ErrEncoderStopped", n, err)
+		}
+	}
+}
+
+// TestConcurrentSendAndClose covers the same defect from the other side:
+// a Send that is already running while Close shuts the encoder down.
+func TestConcurrentSendAndClose(t *testing.T) {
+	for range 50 {
+		e, err := New(unitTestClockHz, func(Level) error { return nil },
+			WithSyncBytes(0), WithBufferSize(1))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// Errors are expected here; a panic is not.
+			_, _ = e.Send(make([]byte, 64))
+		}()
+		go func() {
+			defer wg.Done()
+			_ = e.Close()
+		}()
+		wg.Wait()
+	}
+}
+
+// TestEncoderNewRejectsInvalidConfig covers the validation New gained
+// when it stopped panicking on invalid parameters, matching decoder.New.
+func TestEncoderNewRejectsInvalidConfig(t *testing.T) {
+	setValue := func(Level) error { return nil }
+
+	tests := []struct {
+		name     string
+		clockHz  int
+		setValue SetValue
+		opts     []Option
+	}{
+		{"zero bit clock", 0, setValue, nil},
+		{"negative bit clock", -1, setValue, nil},
+		{"nil setValue", unitTestClockHz, nil, nil},
+		{"unknown encoding", unitTestClockHz, setValue, []Option{WithManchesterEncoding(42)}},
+		{"unknown bit order", unitTestClockHz, setValue, []Option{WithBitOrder(42)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := New(tt.clockHz, tt.setValue, tt.opts...)
+			if err == nil {
+				e.Close()
+				t.Fatal("New accepted an invalid configuration, want an error")
+			}
+			if e != nil {
+				t.Errorf("New returned a non-nil encoder alongside the error %v", err)
+			}
+		})
+	}
+}
+
+// TestEncoderNewAcceptsValidConfig is the counterpart: both encodings and a
+// plain configuration must still be accepted.
+func TestEncoderNewAcceptsValidConfig(t *testing.T) {
+	for _, enc := range []ManchesterEncoding{IEEE, Thomas} {
+		e, err := New(unitTestClockHz, func(Level) error { return nil },
+			WithManchesterEncoding(enc))
+		if err != nil {
+			t.Fatalf("New rejected encoding %v: %v", enc, err)
+		}
+		if err := e.Close(); err != nil {
+			t.Errorf("Close: %v", err)
 		}
 	}
 }
