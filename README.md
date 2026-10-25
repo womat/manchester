@@ -253,10 +253,11 @@ go test -race ./...
 go test ./decoder/ -run TestRecovery -v
 ```
 
-`scripts/check.sh` runs `go fix`, `go vet`, `golangci-lint` and `govulncheck`
-over this module and the demos, with `GOOS=linux` by default: the encoder has a
-Linux-only file and the demos drive lines through `github.com/womat/gpio/rpi`.
-`--check` reports pending `go fix` work without writing, `--skip=vuln` drops
+`scripts/check.sh` runs `go fix`, `go mod tidy`, `go vet`, `golangci-lint` and
+`govulncheck` over this module and the demos, with `GOOS=linux` by default: the
+encoder has a Linux-only file and the demos drive lines through
+`github.com/womat/gpio/rpi`. `--check` reports pending `go fix` and
+`go mod tidy` work without writing, `--skip=vuln` drops
 the step that needs a network.
 
 `go test -cover ./...` reports the coverage of each package. The roundtrip

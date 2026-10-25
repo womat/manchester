@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Runs go fix, go vet, golangci-lint and govulncheck over every module in this
-# repository.
+# Runs go fix, go mod tidy, go vet, golangci-lint and govulncheck over every
+# module in this repository.
 #
 # Two things make a plain "go vet ./..." at the root insufficient:
 #
@@ -35,7 +35,7 @@ ALL_MODULES=(
 	demo/manchester_bench
 )
 
-ALL_STEPS=(fix vet lint vuln)
+ALL_STEPS=(fix tidy vet lint vuln)
 
 goos=linux
 check_only=0
@@ -85,9 +85,9 @@ require_tool() {
 
 # Same versions as .github/workflows/ci.yml; raise both together.
 step_skipped lint || require_tool golangci-lint \
-	'go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0' lint
+	'go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0' lint
 step_skipped vuln || require_tool govulncheck \
-	'go install golang.org/x/vuln/cmd/govulncheck@v1.8.0' vuln
+	'go install golang.org/x/vuln/cmd/govulncheck@v1.9.0' vuln
 
 # Bold only when stdout is a terminal, so redirected output stays clean.
 if [ -t 1 ]; then
@@ -113,8 +113,9 @@ run_step() {
 
 	# govulncheck prints a report even when it finds nothing, so success is
 	# judged by the exit status alone and its output stays hidden unless asked
-	# for. golangci-lint prints its findings and exits 1; go fix -diff prints a
-	# patch and exits 1. Both are failures worth showing in full.
+	# for. golangci-lint prints its findings and exits 1; go fix -diff and
+	# go mod tidy -diff print a patch and exit 1. All are failures worth
+	# showing in full.
 	if [ $status -eq 0 ]; then
 		printf '  %-6s %sok%s\n' "$step" "$G" "$N"
 		[ $verbose -eq 1 ] && [ -n "$output" ] && printf '%s\n' "$output" | sed 's/^/      /'
@@ -136,8 +137,10 @@ for module in "${modules[@]}"; do
 
 	if [ $check_only -eq 1 ]; then
 		run_step "$module" fix env GOOS="$goos" go fix -diff ./...
+		run_step "$module" tidy go mod tidy -diff
 	else
 		run_step "$module" fix env GOOS="$goos" go fix ./...
+		run_step "$module" tidy go mod tidy
 	fi
 	run_step "$module" vet env GOOS="$goos" go vet ./...
 	run_step "$module" lint env GOOS="$goos" golangci-lint run ./...

@@ -23,7 +23,7 @@ line, so they only build for Linux.
 ```sh
 go test -race ./...                          # the module builds and tests on macOS too
 go test ./decoder/ -run TestRecovery -v      # one test
-scripts/check.sh                             # go fix, vet, golangci-lint, govulncheck, all modules
+scripts/check.sh                             # go fix, go mod tidy, vet, golangci-lint, govulncheck, all modules
 scripts/check.sh --check --skip=vuln         # report only, no network
 ```
 
@@ -81,9 +81,13 @@ Linter configuration is `.golangci.yml`; the demo modules find it by walking up.
 ignores the deferred `Close` of `Encoder`, `Decoder` and `gpio.Pin`, and test files. **Do not
 widen these exclusions to make a new finding go away; fix the finding or record the decision.**
 
-**CI:** `.github/workflows/ci.yml`, on pushes to `main` and pull requests, runs on Linux.
+**CI:** `.github/workflows/ci.yml`, on pushes to `main`, pull requests, weekly and by hand, runs
+on Linux. `setup-go` takes the Go version from `go.mod` with `check-latest`, so the weekly run
+catches a toolchain advisory without a commit. golangci-lint and govulncheck are pinned in
+`ci.yml` and in `scripts/check.sh`; raise both together.
 Actions are pinned to a commit SHA with the release in a comment; dependabot updates the pins
 and the Go dependencies of all modules in one group. Jobs: `format`, `checks`
-(`scripts/check.sh --check`), `library` (vet plus `go test -race -cover`), `cross` (five Linux
-targets plus Windows and macOS — the codec is portable), `demos`. All modules declare
+(`scripts/check.sh --check`, including vet, plus vet for macOS and Windows), `library` (`go test
+-race -cover`), `cross` (four Linux targets besides the amd64 the library job builds, plus
+Windows and macOS — the codec is portable), `demos`. All modules declare
 `go 1.27`, the same as golib and its consumers; keep them in step.
