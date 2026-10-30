@@ -3,7 +3,7 @@ module github.com/womat/manchester/demo/manchester_bench
 go 1.27
 
 require (
-	github.com/womat/gpio v1.0.3
+	github.com/womat/gpio v1.1.0
 	github.com/womat/manchester v1.0.0
 	golang.org/x/sys v0.49.0
 )
